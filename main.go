@@ -25,6 +25,7 @@ import (
 
 	Possible bytecodes
 		nop (no operation)
+		byte (pushes byte value onto the stack)
 		const (pushes const value onto stack (can be a label))
 		load (loads value of register at index stack[0])
 		store (stores value of stack[1] to register at index stack[0])
@@ -44,14 +45,17 @@ import (
 		jge (jump if stack[0] greater than or equal to 0)
 		jg  (jump if stack[0] greater than 0)
 
-		// The following all do: (compare stack[0] to stack[1]: negative if stack[0] < stack[1], 0 if stack[0] == stack[1], positive if stack[0] > stack[1])
-		// However, the naming scheme is as follows:
-		//		cmpu -> treats both inputs as unsigned 32-bit
-		//		cmps -> treats both inputs as signed 32-bit
-		//		cmpf -> treats both inputs as float 32-bit
+		The following all do: (compare stack[0] to stack[1]: negative if stack[0] < stack[1], 0 if stack[0] == stack[1], positive if stack[0] > stack[1])
+		However, the naming scheme is as follows:
+				cmpu -> treats both inputs as unsigned 32-bit
+				cmps -> treats both inputs as signed 32-bit
+				cmpf -> treats both inputs as float 32-bit
 		cmpu
 		cmps
 		cmpf
+
+		write (writes stack[1] bytes from address at stack[0] to the console)
+		read (reads )
 
 	Examples:
 		const 3 // stack: [3]
@@ -74,35 +78,36 @@ type Bytecode byte
 
 const (
 	Nop      Bytecode = 0x00
-	Const    Bytecode = 0x01
-	Load     Bytecode = 0x02
-	Store    Bytecode = 0x03
-	Loadp8   Bytecode = 0x04
-	Loadp16  Bytecode = 0x05
-	Loadp32  Bytecode = 0x06
-	Storep8  Bytecode = 0x07
-	Storep16 Bytecode = 0x08
-	Storep32 Bytecode = 0x09
-	Push     Bytecode = 0x0A
-	Pop      Bytecode = 0x0B
-	Addi     Bytecode = 0x0C
-	Addf     Bytecode = 0x0D
-	Subi     Bytecode = 0x0E
-	Subf     Bytecode = 0x0F
-	Muli     Bytecode = 0x10
-	Mulf     Bytecode = 0x11
-	Divi     Bytecode = 0x12
-	Divf     Bytecode = 0x13
-	Jmp      Bytecode = 0x14
-	Jz       Bytecode = 0x15
-	Jnz      Bytecode = 0x16
-	Jle      Bytecode = 0x17
-	Jl       Bytecode = 0x18
-	Jge      Bytecode = 0x19
-	Jg       Bytecode = 0x1A
-	Cmpu     Bytecode = 0x1B
-	Cmps     Bytecode = 0x1C
-	Cmpf     Bytecode = 0x1D
+	Byte     Bytecode = 0x01
+	Const    Bytecode = 0x02
+	Load     Bytecode = 0x03
+	Store    Bytecode = 0x04
+	Loadp8   Bytecode = 0x05
+	Loadp16  Bytecode = 0x06
+	Loadp32  Bytecode = 0x07
+	Storep8  Bytecode = 0x08
+	Storep16 Bytecode = 0x09
+	Storep32 Bytecode = 0x0A
+	Push     Bytecode = 0x0B
+	Pop      Bytecode = 0x0C
+	Addi     Bytecode = 0x0D
+	Addf     Bytecode = 0x0E
+	Subi     Bytecode = 0x0F
+	Subf     Bytecode = 0x10
+	Muli     Bytecode = 0x11
+	Mulf     Bytecode = 0x12
+	Divi     Bytecode = 0x13
+	Divf     Bytecode = 0x14
+	Jmp      Bytecode = 0x15
+	Jz       Bytecode = 0x16
+	Jnz      Bytecode = 0x17
+	Jle      Bytecode = 0x18
+	Jl       Bytecode = 0x19
+	Jge      Bytecode = 0x1A
+	Jg       Bytecode = 0x1B
+	Cmpu     Bytecode = 0x1C
+	Cmps     Bytecode = 0x1D
+	Cmpf     Bytecode = 0x1E
 )
 
 const (
@@ -122,6 +127,7 @@ var (
 
 	instrMap = map[string]Bytecode{
 		"nop":      Nop,
+		"byte":     Byte,
 		"const":    Const,
 		"load":     Load,
 		"store":    Store,
@@ -159,6 +165,8 @@ func (b Bytecode) String() string {
 	switch b {
 	case Nop:
 		return "nop"
+	case Byte:
+		return "byte"
 	case Const:
 		return "const"
 	case Load:
@@ -225,7 +233,7 @@ func (b Bytecode) String() string {
 // True if the bytecode requires an argument to be paired
 // with it, such as const X
 func (b Bytecode) RequiresOpArg() bool {
-	return b == Const ||
+	return b == Const || b == Byte ||
 		b == Push || b == Pop ||
 		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg
 }
@@ -234,9 +242,25 @@ func (b Bytecode) RequiresOpArg() bool {
 // type (signed, unsigned int or float)
 type Register uint32
 
+// Laid out this way so that sizeof(Instruction) == 8
 type Instruction struct {
 	code Bytecode
-	arg  uint32
+
+	// additional data we use for state
+	// 		const: extra[0] tells const how many bytes to use to represent the constant
+	extra [3]byte
+
+	// argument to the bytecode itself
+	arg uint32
+}
+
+func NewInstruction(code Bytecode, arg uint32, extra ...byte) Instruction {
+	instr := Instruction{code: code, arg: arg}
+	size := min(len(extra), len(instr.extra))
+	for i := 0; i < size; i++ {
+		instr.extra[i] = extra[i]
+	}
+	return instr
 }
 
 func (i Instruction) String() string {
@@ -265,6 +289,10 @@ func float32FromBytes(bytes []byte) float32 {
 	return math.Float32frombits(uint32FromBytes(bytes[:4]))
 }
 
+func uint16ToBytes(u uint16, bytes []byte) {
+	binary.LittleEndian.PutUint16(bytes[:2], u)
+}
+
 func uint32ToBytes(u uint32, bytes []byte) {
 	binary.LittleEndian.PutUint32(bytes[:4], u)
 }
@@ -283,15 +311,16 @@ func (vm *GVM) StackPointer() *Register {
 
 func (vm *GVM) PrintCurrentState() {
 	fmt.Println("->\t\tregisters:", vm.registers)
-	fmt.Print("->\t\tstack: [")
-	for i := int32(*vm.StackPointer()) - 1; i >= 0; i-- {
-		if i == 0 {
-			fmt.Printf("%d", vm.stack[i])
-		} else {
-			fmt.Printf("%d ", vm.stack[i])
-		}
-	}
-	fmt.Println("]")
+	fmt.Println("->\t\tstack:", vm.stack[0:*vm.StackPointer()])
+	// fmt.Print("->\t\tstack: [")
+	// for i := int32(*vm.StackPointer()) - 1; i >= 0; i-- {
+	// 	if i == 0 {
+	// 		fmt.Printf("%d", vm.stack[i])
+	// 	} else {
+	// 		fmt.Printf("%d ", vm.stack[i])
+	// 	}
+	// }
+	// fmt.Println("]")
 }
 
 func (vm *GVM) peekStack(offset uint32) []byte {
@@ -304,6 +333,26 @@ func (vm *GVM) popStack() []byte {
 	start, end := *sp-Register(VArchBytes), *sp
 	*sp = start
 	return vm.stack[start:end]
+}
+
+// Constrains to types we can freely interpret their 32 bit pattern
+type numeric32 interface {
+	int32 | uint32 | float32
+}
+
+type numeric interface {
+	int8 | uint8 | int16 | uint16 | numeric32
+}
+
+type uinteger interface {
+	uint8 | uint16 | uint32
+}
+
+func (vm *GVM) pushStackByte(value uint32) {
+	sp := vm.StackPointer()
+	start, end := *sp, *sp+Register(1)
+	*sp = end
+	vm.stack[start] = byte(value)
 }
 
 func (vm *GVM) pushStack(value any) {
@@ -325,19 +374,6 @@ func (vm *GVM) PrintProgram() {
 	for i, instr := range vm.program {
 		fmt.Printf("\t%d: %s\n", i, instr)
 	}
-}
-
-// Constrains to types we can freely interpret their 32 bit pattern
-type numeric32 interface {
-	int32 | uint32 | float32
-}
-
-type numeric interface {
-	int8 | uint8 | int16 | uint16 | numeric32
-}
-
-type uinteger interface {
-	uint8 | uint16 | uint32
 }
 
 func compare[T numeric32](vm *GVM) {
@@ -441,7 +477,7 @@ func storepX[T uinteger](vm *GVM) {
 	}
 }
 
-func (vm *GVM) execNextInstruction(debug bool) error {
+func (vm *GVM) execNextInstruction() error {
 	pc := vm.ProgramCounter()
 	if *pc >= Register(len(vm.program)) {
 		return errProgramFinished
@@ -451,6 +487,8 @@ func (vm *GVM) execNextInstruction(debug bool) error {
 	*pc += 1
 	switch instr.code {
 	case Nop:
+	case Byte:
+		vm.pushStackByte(instr.arg)
 	case Const:
 		vm.pushStack(instr.arg)
 	case Load:
@@ -480,6 +518,12 @@ func (vm *GVM) execNextInstruction(debug bool) error {
 		storepX[uint16](vm)
 	case Storep32:
 		storepX[uint32](vm)
+	case Push:
+		sp := vm.StackPointer()
+		*sp = *sp + Register(instr.arg)
+	case Pop:
+		sp := vm.StackPointer()
+		*sp = *sp - Register(instr.arg)
 	case Addi:
 		arithmetic(vm, arithAddi)
 	case Addf:
@@ -538,10 +582,6 @@ func (vm *GVM) execNextInstruction(debug bool) error {
 		return errUnknownInstruction
 	}
 
-	if debug {
-		vm.PrintCurrentState()
-	}
-
 	return nil
 }
 
@@ -549,43 +589,80 @@ func NewVirtualMachine(file string) (*GVM, error) {
 	return &GVM{program: make([]Instruction, 0)}, nil
 }
 
-func parseInputLine(line string) (Instruction, error) {
+func parseInputLine(line string) ([]Instruction, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return Instruction{code: Nop}, nil
+		return []Instruction{{code: Nop}}, nil
 	}
 
 	parsed := strings.Split(line, " ")
 	code, ok := instrMap[parsed[0]]
 	if !ok {
-		return Instruction{}, fmt.Errorf("unknown bytecode: %s", parsed[0])
+		return nil, fmt.Errorf("unknown bytecode: %s", parsed[0])
 	}
 
 	if len(parsed) > 1 {
 		// const is a character
 		if strings.HasPrefix(parsed[1], "'") {
+			if !strings.HasSuffix(parsed[1], "'") {
+				return nil, errors.New("invalid syntax: unterminated character")
+			}
+
 			runes := []rune(parsed[1])
-			if len(runes) < 3 {
-				return Instruction{}, errors.New("invalid syntax: unterminated character")
-			} else if len(runes) != 3 {
-				return Instruction{}, errors.New("character value to large to fit into 32 bits")
+			if len(runes) != 3 {
+				return nil, errors.New("character value to large to fit into 32 bits")
 			}
 
-			return Instruction{code: code, arg: uint32(runes[1])}, nil
+			return []Instruction{NewInstruction(code, uint32(runes[1]))}, nil
+		} else if strings.HasPrefix(parsed[1], "\"") {
+			if code != Const {
+				return nil, errors.New("string constant used outside of const bytecode")
+			}
+
+			if !strings.HasSuffix(parsed[1], "\"") {
+				return nil, errors.New("invalid syntax: unterminated string")
+			}
+
+			parsed[1] = strings.ReplaceAll(parsed[1], "\"", "")
+			bytes := []byte(parsed[1])
+			instrs := make([]Instruction, len(bytes))
+			// Expand const "string" instruction into a series of 1-byte consts in reverse order
+			for i := 0; i < len(instrs); i++ {
+				value := uint32(bytes[len(bytes)-1-i])
+				// Use 1 byte to represent each const by using Byte
+				instrs[i] = NewInstruction(Byte, value)
+			}
+
+			return instrs, nil
 		} else {
-			arg, err := strconv.ParseInt(parsed[1], 10, 32)
-			if err != nil {
-				return Instruction{}, err
-			}
+			// Likely a regular number or float
+			if strings.Contains(parsed[1], ".") {
+				arg, err := strconv.ParseFloat(parsed[1], 32)
+				if err != nil {
+					return nil, err
+				}
 
-			return Instruction{code: code, arg: uint32(arg)}, nil
+				return []Instruction{NewInstruction(code, math.Float32bits(float32(arg)))}, nil
+			} else {
+				arg, err := strconv.ParseInt(parsed[1], 10, 32)
+				if err != nil {
+					return nil, err
+				}
+
+				return []Instruction{NewInstruction(code, uint32(arg))}, nil
+			}
 		}
 	} else {
-		return Instruction{code: code}, nil
+		return []Instruction{NewInstruction(code, 0)}, nil
 	}
 }
 
 func main() {
+	var is Instruction
+	if unsafe.Sizeof(is) != 8 {
+		panic("Critical error: instruction struct is not 8 bytes")
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 	vm, err := NewVirtualMachine("")
 	if err != nil {
@@ -599,14 +676,16 @@ func main() {
 		line = strings.TrimSpace(line)
 		if line == "program" {
 			vm.PrintProgram()
+		} else if line == "state" {
+			vm.PrintCurrentState()
 		} else {
 			instr, err := parseInputLine(line)
 			if err != nil {
 				fmt.Println(err)
 			} else {
-				vm.program = append(vm.program, instr)
+				vm.program = append(vm.program, instr...)
 				for {
-					if e := vm.execNextInstruction(true); e != nil {
+					if e := vm.execNextInstruction(); e != nil {
 						break
 					}
 				}
