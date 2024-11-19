@@ -9,10 +9,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unsafe"
 )
 
 /*
 	For each CPU core:
+		- little endian
 		- 32-bit virtual architecture
 		- 32 registers starting at index 0
 		- register 0 is the program counter
@@ -111,11 +113,12 @@ const (
 )
 
 var (
-	errProgramFinished   = errors.New("ran out of instructions")
-	errStackUnderflow    = errors.New("stack underflow error")
-	errStackOverflow     = errors.New("stack overflow error")
-	errSegmentationFault = errors.New("segmentation fault")
-	errNotYetImplemented = errors.New("instruction not implemented")
+	errProgramFinished    = errors.New("ran out of instructions")
+	errStackUnderflow     = errors.New("stack underflow error")
+	errStackOverflow      = errors.New("stack overflow error")
+	errSegmentationFault  = errors.New("segmentation fault")
+	errIllegalOperation   = errors.New("illegal operation at instruction")
+	errUnknownInstruction = errors.New("instruction not recognized")
 
 	instrMap = map[string]Bytecode{
 		"nop":      Nop,
@@ -219,11 +222,17 @@ func (b Bytecode) String() string {
 	}
 }
 
+// True if the bytecode requires an argument to be paired
+// with it, such as const X
+func (b Bytecode) RequiresOpArg() bool {
+	return b == Const ||
+		b == Push || b == Pop ||
+		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg
+}
+
 // Each register is just a bit pattern with no concept of
 // type (signed, unsigned int or float)
 type Register uint32
-
-const NoInstructionArg uint32 = math.MaxUint32
 
 type Instruction struct {
 	code Bytecode
@@ -231,9 +240,13 @@ type Instruction struct {
 }
 
 func (i Instruction) String() string {
-	if i.arg == NoInstructionArg {
+	if !i.code.RequiresOpArg() {
 		return i.code.String()
 	} else {
+		intArg := int32(i.arg)
+		if intArg < 0 {
+			return fmt.Sprintf("%s %d (%d)", i.code.String(), intArg, i.arg)
+		}
 		return fmt.Sprintf("%s %d", i.code.String(), i.arg)
 	}
 }
@@ -245,7 +258,7 @@ type GVM struct {
 }
 
 func uint32FromBytes(bytes []byte) uint32 {
-	return binary.NativeEndian.Uint32(bytes[:4])
+	return binary.LittleEndian.Uint32(bytes[:4])
 }
 
 func float32FromBytes(bytes []byte) float32 {
@@ -253,7 +266,7 @@ func float32FromBytes(bytes []byte) float32 {
 }
 
 func uint32ToBytes(u uint32, bytes []byte) {
-	binary.NativeEndian.PutUint32(bytes[:4], u)
+	binary.LittleEndian.PutUint32(bytes[:4], u)
 }
 
 func float32ToBytes(f float32, bytes []byte) {
@@ -317,6 +330,14 @@ func (vm *GVM) PrintProgram() {
 // Constrains to types we can freely interpret their 32 bit pattern
 type numeric32 interface {
 	int32 | uint32 | float32
+}
+
+type numeric interface {
+	int8 | uint8 | int16 | uint16 | numeric32
+}
+
+type uinteger interface {
+	uint8 | uint16 | uint32
 }
 
 func compare[T numeric32](vm *GVM) {
@@ -388,6 +409,38 @@ func arithmetic[T numeric32](vm *GVM, op func(T, T, []byte)) {
 	op(T(arg0), T(arg1), arg1Bytes)
 }
 
+func loadpX[T numeric](vm *GVM) {
+	addrBytes := vm.peekStack(VArchBytes)
+	addr := uint32FromBytes(addrBytes)
+
+	var v T
+	sizeof := unsafe.Sizeof(v)
+	result := uint32(0)
+
+	switch sizeof {
+	case 1:
+		result = uint32(vm.stack[addr])
+	case 2:
+		result = uint32(binary.LittleEndian.Uint16(vm.stack[addr : addr+2]))
+	case 4:
+		result = uint32(binary.LittleEndian.Uint32(vm.stack[addr : addr+4]))
+	}
+
+	// overwrite addrBytes with memory value
+	uint32ToBytes(result, addrBytes)
+}
+
+func storepX[T uinteger](vm *GVM) {
+	addr := uint32FromBytes(vm.popStack())
+	valueBytes := vm.popStack()
+
+	var v T
+	sizeof := uint32(unsafe.Sizeof(v))
+	for i := uint32(0); i < sizeof; i++ {
+		vm.stack[addr+i] = valueBytes[i]
+	}
+}
+
 func (vm *GVM) execNextInstruction(debug bool) error {
 	pc := vm.ProgramCounter()
 	if *pc >= Register(len(vm.program)) {
@@ -408,8 +461,25 @@ func (vm *GVM) execNextInstruction(debug bool) error {
 		uint32ToBytes(uint32(vm.registers[regIdx]), stackTop)
 	case Store:
 		regIdx := uint32FromBytes(vm.popStack())
+		if regIdx < 2 {
+			// not allowed to write to program counter or stack pointer
+			return errIllegalOperation
+		}
+
 		regValue := uint32FromBytes(vm.popStack())
 		vm.registers[regIdx] = Register(regValue)
+	case Loadp8:
+		loadpX[uint8](vm)
+	case Loadp16:
+		loadpX[uint16](vm)
+	case Loadp32:
+		loadpX[uint32](vm)
+	case Storep8:
+		storepX[uint8](vm)
+	case Storep16:
+		storepX[uint16](vm)
+	case Storep32:
+		storepX[uint32](vm)
 	case Addi:
 		arithmetic(vm, arithAddi)
 	case Addf:
@@ -465,7 +535,7 @@ func (vm *GVM) execNextInstruction(debug bool) error {
 	case Cmpf:
 		compare[float32](vm)
 	default:
-		return errNotYetImplemented
+		return errUnknownInstruction
 	}
 
 	if debug {
@@ -482,7 +552,7 @@ func NewVirtualMachine(file string) (*GVM, error) {
 func parseInputLine(line string) (Instruction, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return Instruction{code: Nop, arg: NoInstructionArg}, nil
+		return Instruction{code: Nop}, nil
 	}
 
 	parsed := strings.Split(line, " ")
@@ -492,14 +562,26 @@ func parseInputLine(line string) (Instruction, error) {
 	}
 
 	if len(parsed) > 1 {
-		arg, err := strconv.ParseInt(parsed[1], 10, 32)
-		if err != nil {
-			return Instruction{}, err
-		}
+		// const is a character
+		if strings.HasPrefix(parsed[1], "'") {
+			runes := []rune(parsed[1])
+			if len(runes) < 3 {
+				return Instruction{}, errors.New("invalid syntax: unterminated character")
+			} else if len(runes) != 3 {
+				return Instruction{}, errors.New("character value to large to fit into 32 bits")
+			}
 
-		return Instruction{code: code, arg: uint32(arg)}, nil
+			return Instruction{code: code, arg: uint32(runes[1])}, nil
+		} else {
+			arg, err := strconv.ParseInt(parsed[1], 10, 32)
+			if err != nil {
+				return Instruction{}, err
+			}
+
+			return Instruction{code: code, arg: uint32(arg)}, nil
+		}
 	} else {
-		return Instruction{code: code, arg: NoInstructionArg}, nil
+		return Instruction{code: code}, nil
 	}
 }
 
