@@ -14,10 +14,10 @@ import (
 /*
 	For each CPU core:
 		- 32-bit virtual architecture
-		- 64 registers starting at index 0
+		- 32 registers starting at index 0
 		- register 0 is the program counter
 		- register 1 is the stack pointer
-		- registers indexed 2 through 63 are general purpose, 32-bit
+		- registers indexed 2 through 31 are general purpose, 32-bit
 
 	The stack is 64kb in size
 
@@ -41,7 +41,15 @@ import (
 		jl  (jump if stack[0] less than 0)
 		jge (jump if stack[0] greater than or equal to 0)
 		jg  (jump if stack[0] greater than 0)
-		cmp (compare stack[0] to stack[1]: negative if stack[0] < stack[1], 0 if stack[0] == stack[1], positive if stack[0] > stack[1])
+
+		// The following all do: (compare stack[0] to stack[1]: negative if stack[0] < stack[1], 0 if stack[0] == stack[1], positive if stack[0] > stack[1])
+		// However, the naming scheme is as follows:
+		//		cmpu -> treats both inputs as unsigned 32-bit
+		//		cmps -> treats both inputs as signed 32-bit
+		//		cmpf -> treats both inputs as float 32-bit
+		cmpu
+		cmps
+		cmpf
 
 	Examples:
 		const 3 // stack: [3]
@@ -90,11 +98,13 @@ const (
 	Jl       Bytecode = 0x18
 	Jge      Bytecode = 0x19
 	Jg       Bytecode = 0x1A
-	Cmp      Bytecode = 0x1B
+	Cmpu     Bytecode = 0x1B
+	Cmps     Bytecode = 0x1C
+	Cmpf     Bytecode = 0x1D
 )
 
 const (
-	NumRegisters int = 64
+	NumRegisters int = 32
 	StackSize    int = 65536
 	// 4 bytes since our virtual architecture is 32-bit
 	VArchBytes = 4
@@ -135,7 +145,9 @@ var (
 		"jl":       Jl,
 		"jge":      Jge,
 		"jg":       Jg,
-		"cmp":      Cmp,
+		"cmpu":     Cmpu,
+		"cmps":     Cmps,
+		"cmpf":     Cmpf,
 	}
 )
 
@@ -196,8 +208,12 @@ func (b Bytecode) String() string {
 		return "jge"
 	case Jg:
 		return "jg"
-	case Cmp:
-		return "cmp"
+	case Cmpu:
+		return "cmpu"
+	case Cmps:
+		return "cmps"
+	case Cmpf:
+		return "cmpf"
 	default:
 		return "?unknown?"
 	}
@@ -254,7 +270,41 @@ func (vm *GVM) StackPointer() *Register {
 
 func (vm *GVM) PrintCurrentState() {
 	fmt.Println("->\t\tregisters:", vm.registers)
-	fmt.Println("->\t\tstack:", vm.stack[0:*vm.StackPointer()])
+	fmt.Print("->\t\tstack: [")
+	for i := int32(*vm.StackPointer()) - 1; i >= 0; i-- {
+		if i == 0 {
+			fmt.Printf("%d", vm.stack[i])
+		} else {
+			fmt.Printf("%d ", vm.stack[i])
+		}
+	}
+	fmt.Println("]")
+}
+
+func (vm *GVM) peekStack(offset uint32) []byte {
+	sp := vm.StackPointer()
+	return vm.stack[*sp-Register(offset) : *sp]
+}
+
+func (vm *GVM) popStack() []byte {
+	sp := vm.StackPointer()
+	start, end := *sp-Register(VArchBytes), *sp
+	*sp = start
+	return vm.stack[start:end]
+}
+
+func (vm *GVM) pushStack(value any) {
+	sp := vm.StackPointer()
+	start, end := *sp, *sp+Register(VArchBytes)
+	*sp = end
+	switch v := value.(type) {
+	case uint32:
+		uint32ToBytes(v, vm.stack[start:end])
+	case float32:
+		float32ToBytes(v, vm.stack[start:end])
+	default:
+		panic("Unknown type: should be unsigned 32 bit or float 32 bit")
+	}
 }
 
 func (vm *GVM) PrintProgram() {
@@ -264,9 +314,82 @@ func (vm *GVM) PrintProgram() {
 	}
 }
 
-func (vm *GVM) runNextInstruction(debug bool) error {
+// Constrains to types we can freely interpret their 32 bit pattern
+type numeric32 interface {
+	int32 | uint32 | float32
+}
+
+func compare[T numeric32](vm *GVM) {
+	arg0 := uint32FromBytes(vm.popStack())
+	arg1Bytes := vm.peekStack(VArchBytes)
+	arg1 := uint32FromBytes(arg1Bytes)
+
+	a0T := T(arg0)
+	a1T := T(arg1)
+	var result uint32
+	if a0T < a1T {
+		result = math.MaxUint32 // -1 when converted to int32
+	} else if a0T == a1T {
+		result = 0
+	} else {
+		result = 1
+	}
+
+	// Overwrite arg1 bytes with result of compare
+	uint32ToBytes(result, arg1Bytes)
+}
+
+func arithAddi(x, y uint32, bytes []byte) {
+	// Overwrite bytes with result
+	uint32ToBytes(x+y, bytes)
+}
+
+func arithAddf(x, y float32, bytes []byte) {
+	// Overwrite bytes with result
+	float32ToBytes(x+y, bytes)
+}
+
+func arithSubi(x, y uint32, bytes []byte) {
+	// Overwrite bytes with result
+	uint32ToBytes(x-y, bytes)
+}
+
+func arithSubf(x, y float32, bytes []byte) {
+	// Overwrite bytes with result
+	float32ToBytes(x-y, bytes)
+}
+
+func arithMuli(x, y uint32, bytes []byte) {
+	// Overwrite bytes with result
+	uint32ToBytes(x*y, bytes)
+}
+
+func arithMulf(x, y float32, bytes []byte) {
+	// Overwrite bytes with result
+	float32ToBytes(x*y, bytes)
+}
+
+func arithDivi(x, y uint32, bytes []byte) {
+	// Overwrite bytes with result
+	uint32ToBytes(x/y, bytes)
+}
+
+func arithDivf(x, y float32, bytes []byte) {
+	// Overwrite bytes with result
+	float32ToBytes(x/y, bytes)
+}
+
+func arithmetic[T numeric32](vm *GVM, op func(T, T, []byte)) {
+	arg0 := uint32FromBytes(vm.popStack())
+	arg1Bytes := vm.peekStack(VArchBytes)
+	arg1 := uint32FromBytes(arg1Bytes)
+
+	// Overwrites arg1Bytes with result of op
+	op(T(arg0), T(arg1), arg1Bytes)
+}
+
+func (vm *GVM) execNextInstruction(debug bool) error {
 	pc := vm.ProgramCounter()
-	sp := vm.StackPointer()
 	if *pc >= Register(len(vm.program)) {
 		return errProgramFinished
 	}
@@ -276,43 +399,71 @@ func (vm *GVM) runNextInstruction(debug bool) error {
 	switch instr.code {
 	case Nop:
 	case Const:
-		start, end := *sp, *sp+Register(VArchBytes)
-		uint32ToBytes(instr.arg, vm.stack[start:end])
-		*sp = end
+		vm.pushStack(instr.arg)
 	case Load:
-		// determine start/end bytes
-		start, end := *sp-Register(VArchBytes), *sp
 		// read register index from stack
-		regIdx := uint32FromBytes(vm.stack[start:end])
+		stackTop := vm.peekStack(VArchBytes)
+		regIdx := uint32FromBytes(stackTop)
 		// overwrite register index on stack with register value
-		uint32ToBytes(uint32(vm.registers[regIdx]), vm.stack[start:end])
+		uint32ToBytes(uint32(vm.registers[regIdx]), stackTop)
 	case Store:
-		storeIdx := *sp - 2*Register(VArchBytes)
-		regIdx := *sp - Register(VArchBytes)
-
-		storeVal := uint32FromBytes(vm.stack[storeIdx : storeIdx+VArchBytes])
-		regIdx = Register(uint32FromBytes(vm.stack[regIdx : regIdx+VArchBytes]))
-
-		vm.registers[regIdx] = Register(storeVal)
-		*sp = storeIdx
+		regIdx := uint32FromBytes(vm.popStack())
+		regValue := uint32FromBytes(vm.popStack())
+		vm.registers[regIdx] = Register(regValue)
+	case Addi:
+		arithmetic(vm, arithAddi)
+	case Addf:
+		arithmetic(vm, arithAddf)
+	case Subi:
+		arithmetic(vm, arithSubi)
+	case Subf:
+		arithmetic(vm, arithSubf)
+	case Muli:
+		arithmetic(vm, arithMuli)
+	case Mulf:
+		arithmetic(vm, arithMulf)
+	case Divi:
+		arithmetic(vm, arithDivi)
+	case Divf:
+		arithmetic(vm, arithDivf)
 	case Jmp:
 		*pc = Register(instr.arg)
-	case Jnz:
-		start, end := *sp-Register(VArchBytes), *sp
-		stackVal := uint32FromBytes(vm.stack[start:end])
-		*sp = start
-		if stackVal != 0 {
+	case Jz:
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if value == 0 {
 			*pc = Register(instr.arg)
 		}
-	case Addi:
-		arg1Start := *sp - 2*Register(VArchBytes)
-		arg0Start := *sp - Register(VArchBytes)
-
-		arg1 := uint32FromBytes(vm.stack[arg1Start : arg1Start+VArchBytes])
-		arg0 := uint32FromBytes(vm.stack[arg0Start : arg0Start+VArchBytes])
-
-		uint32ToBytes(arg0+arg1, vm.stack[arg1Start:arg1Start+VArchBytes])
-		*sp = arg1Start + VArchBytes
+	case Jnz:
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if value != 0 {
+			*pc = Register(instr.arg)
+		}
+	case Jle:
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if int32(value) <= 0 {
+			*pc = Register(instr.arg)
+		}
+	case Jl:
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if int32(value) < 0 {
+			*pc = Register(instr.arg)
+		}
+	case Jge:
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if int32(value) >= 0 {
+			*pc = Register(instr.arg)
+		}
+	case Jg:
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if int32(value) > 0 {
+			*pc = Register(instr.arg)
+		}
+	case Cmpu:
+		compare[uint32](vm)
+	case Cmps:
+		compare[int32](vm)
+	case Cmpf:
+		compare[float32](vm)
 	default:
 		return errNotYetImplemented
 	}
@@ -373,7 +524,7 @@ func main() {
 			} else {
 				vm.program = append(vm.program, instr)
 				for {
-					if e := vm.runNextInstruction(true); e != nil {
+					if e := vm.execNextInstruction(true); e != nil {
 						break
 					}
 				}
