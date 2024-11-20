@@ -9,7 +9,7 @@
     sp
     const -1
     addi            // addi sp -1
-    const finished  // Finished is where we want print function to return to
+    const finished  // finished is where we want print function to return to
     const print
     jmp             // jumps to address at stack[0]
 
@@ -40,7 +40,7 @@ loop:
     const -4
     addi            // addi sp -4 : this will hold the return address
     loadp32         // dereference 4 bytes (32 bits) value from address at stack[0]
-    jmp             // jumps to address at stack[0]
+    jmp             // jumps to return address at stack[0]
 writechar:
     writec
     const -1

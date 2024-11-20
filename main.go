@@ -534,7 +534,7 @@ func storepX[T uinteger](vm *GVM) {
 	}
 }
 
-func (vm *GVM) execNextInstruction() {
+func (vm *GVM) ExecNextInstruction() {
 	pc := vm.ProgramCounter()
 	if *pc >= Register(len(vm.program)) {
 		vm.errcode = errProgramFinished
@@ -687,6 +687,7 @@ func (vm *GVM) execNextInstruction() {
 func NewVirtualMachine(debug bool, files ...string) (*GVM, error) {
 	vm := &GVM{stdin: bufio.NewReader(os.Stdin)}
 
+	// If requested, set up the VM in debug mode
 	var debugSymMap map[int]string
 	if debug {
 		debugSymMap = make(map[int]string)
@@ -697,36 +698,45 @@ func NewVirtualMachine(debug bool, files ...string) (*GVM, error) {
 		vm.stdout = bufio.NewWriter(os.Stdout)
 	}
 
-	file, err := os.Open(files[0])
-	if err != nil {
-		fmt.Println("Could not read", files[0])
-		return nil, err
+	// Read each file
+	lines := make([]string, 0)
+	for _, filename := range files {
+		file, err := os.Open(filename)
+		if err != nil {
+			fmt.Println("Could not read", filename)
+			return nil, err
+		}
+
+		reader := bufio.NewReader(file)
+		for {
+			line, _, err := reader.ReadLine()
+			if err != nil {
+				break
+			}
+
+			lines = append(lines, string(line))
+		}
 	}
 
 	labels := make(map[string]string)
-	lines := make([][2]string, 0)
-	reader := bufio.NewReader(file)
+	preprocessedLines := make([][2]string, 0)
 
 	// Allows us to easily find and replace commands from start to end of line
 	comments := regexp.MustCompile("//.*")
 
 	// First preprocess line to remove whitespace lines and convert labels
 	// into line numbers
-	for {
-		line, _, err := reader.ReadLine()
-		if err != nil {
-			break
-		}
-
-		lines, err = preprocessLine(string(line), comments, labels, lines, debugSymMap)
+	for _, line := range lines {
+		var err error
+		preprocessedLines, err = preprocessLine(string(line), comments, labels, preprocessedLines, debugSymMap)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	vm.program = make([]Instruction, 0, len(lines))
+	vm.program = make([]Instruction, 0, len(preprocessedLines))
 
-	for _, line := range lines {
+	for _, line := range preprocessedLines {
 		// Replace all labels with their instruction address
 		for label, lineNum := range labels {
 			line[1] = strings.ReplaceAll(line[1], label, lineNum)
@@ -743,6 +753,7 @@ func NewVirtualMachine(debug bool, files ...string) (*GVM, error) {
 	return vm, nil
 }
 
+// Checks for things like \\n and replaces it with \n
 func insertEscapeSeqReplacements(line string) string {
 	for orig, replace := range escapeSeqReplacements {
 		line = strings.ReplaceAll(line, orig, replace)
@@ -750,6 +761,7 @@ func insertEscapeSeqReplacements(line string) string {
 	return line
 }
 
+// Checks for things like \n and replaces it with \\n
 func revertEscapeSeqReplacements(line string) string {
 	for orig, replace := range escapeSeqReplacements {
 		line = strings.ReplaceAll(line, replace, orig)
@@ -904,7 +916,7 @@ func execProgramDebugMode(vm *GVM) {
 			// Reset break flag
 			lastBreakLine = -1
 
-			vm.execNextInstruction()
+			vm.ExecNextInstruction()
 			if waitForInput {
 				// Only print state after each instruction if we're also waiting for input
 				// after each instruction
@@ -974,7 +986,7 @@ func main() {
 		execProgramDebugMode(vm)
 	} else {
 		for {
-			vm.execNextInstruction()
+			vm.ExecNextInstruction()
 			if vm.errcode != nil {
 				if vm.errcode != errProgramFinished {
 					fmt.Print(vm.errcode)
