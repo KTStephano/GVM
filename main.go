@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -21,22 +22,30 @@ import (
 		- register 1 is the stack pointer
 		- registers indexed 2 through 31 are general purpose, 32-bit
 
-	The stack is 64kb in size
+	The stack is 64kb in size minimum
 
 	Possible bytecodes
-		nop (no operation)
-		byte (pushes byte value onto the stack)
+		nop   (no operation)
+		byte  (pushes byte value onto the stack)
 		const (pushes const value onto stack (can be a label))
-		load (loads value of register at index stack[0])
+		load  (loads value of register at index stack[0])
 		store (stores value of stack[1] to register at index stack[0])
 		loadp8, loadp16, loadp32 (loads 8, 16 or 32 bit value from address at stack[0], widens to 32 bits)
 		storep8, storep16, storep32 (narrows stack[1] to 8, 16 or 32 bits and writes it to address at stack[0])
+
 		push (reserve bytes on the stack, advances stack pointer)
-		pop (free bytes back to the stack, retracts stack pointer)
+		pop  (free bytes back to the stack, retracts stack pointer)
+
 		addi, addf (int and float add)
 		subi, subf (int and float sub)
 		muli, mulf (int and float mul)
 		divi, divf (int and float div)
+
+		not (inverts all bits of stack[0])
+		and (logical AND between stack[0] and stack[1])
+		or  (logical OR between stack[0] and stack[1])
+		xor (logical XOR between stack[0] and stack[1])
+
 		jmp (unconditional jump to program address at stack[0])
 		jz  (jump if stack[0] is 0)
 		jnz (jump if stack[0] is not 0)
@@ -54,8 +63,10 @@ import (
 		cmps
 		cmpf
 
-		write (writes stack[1] bytes from address at stack[0] to the console)
-		read (reads )
+		writec (writes 1 32-bit value to stdout from stack[0])
+		readc  (reads 1 character from stdin - pushes to stack as 32-bit value)
+
+		exit (stops the program)
 
 	Examples:
 		const 3 // stack: [3]
@@ -98,17 +109,62 @@ const (
 	Mulf     Bytecode = 0x12
 	Divi     Bytecode = 0x13
 	Divf     Bytecode = 0x14
-	Jmp      Bytecode = 0x15
-	Jz       Bytecode = 0x16
-	Jnz      Bytecode = 0x17
-	Jle      Bytecode = 0x18
-	Jl       Bytecode = 0x19
-	Jge      Bytecode = 0x1A
-	Jg       Bytecode = 0x1B
-	Cmpu     Bytecode = 0x1C
-	Cmps     Bytecode = 0x1D
-	Cmpf     Bytecode = 0x1E
+	Not      Bytecode = 0x15
+	And      Bytecode = 0x16
+	Or       Bytecode = 0x17
+	Xor      Bytecode = 0x18
+	Jmp      Bytecode = 0x19
+	Jz       Bytecode = 0x1A
+	Jnz      Bytecode = 0x1B
+	Jle      Bytecode = 0x1C
+	Jl       Bytecode = 0x1D
+	Jge      Bytecode = 0x1E
+	Jg       Bytecode = 0x1F
+	Cmpu     Bytecode = 0x20
+	Cmps     Bytecode = 0x21
+	Cmpf     Bytecode = 0x22
+	Writec   Bytecode = 0x23
+	Readc    Bytecode = 0x24
+	Exit     Bytecode = 0x25
 )
+
+// Each register is just a bit pattern with no concept of
+// type (signed, unsigned int or float)
+type Register uint32
+
+// Laid out this way so that sizeof(Instruction) == 8
+type Instruction struct {
+	code Bytecode
+
+	// additional data we can use for state
+	// 		const: extra[0] tells const how many bytes to use to represent the constant
+	extra [3]byte
+
+	// argument to the bytecode itself
+	arg uint32
+}
+
+type GVM struct {
+	registers [NumRegisters]Register
+	stack     [StackSize]byte
+	program   []Instruction
+	stdin     *bufio.Reader
+}
+
+// Constrains to types we can freely interpret their 32 bit pattern
+type numeric32 interface {
+	int32 | uint32 | float32
+}
+
+// Any numeric value including float, capped at 32 bits
+type numeric interface {
+	int8 | uint8 | int16 | uint16 | numeric32
+}
+
+// Only unsigned integers
+type uinteger interface {
+	uint8 | uint16 | uint32
+}
 
 const (
 	NumRegisters int = 32
@@ -124,8 +180,10 @@ var (
 	errSegmentationFault  = errors.New("segmentation fault")
 	errIllegalOperation   = errors.New("illegal operation at instruction")
 	errUnknownInstruction = errors.New("instruction not recognized")
+	errIO                 = errors.New("input-output error")
 
-	instrMap = map[string]Bytecode{
+	// Maps from string -> instruction
+	strToInstrMap = map[string]Bytecode{
 		"nop":      Nop,
 		"byte":     Byte,
 		"const":    Const,
@@ -147,6 +205,10 @@ var (
 		"mulf":     Mulf,
 		"divi":     Divi,
 		"divf":     Divf,
+		"not":      Not,
+		"and":      And,
+		"or":       Or,
+		"Xor":      Xor,
 		"jmp":      Jmp,
 		"jz":       Jz,
 		"jnz":      Jnz,
@@ -157,77 +219,43 @@ var (
 		"cmpu":     Cmpu,
 		"cmps":     Cmps,
 		"cmpf":     Cmpf,
+		"writec":   Writec,
+		"readc":    Readc,
+		"exit":     Exit,
+	}
+
+	// Maps from instruction -> string (built from strToInstrMap)
+	instrToStrMap map[Bytecode]string
+
+	// Allows us to replace \\* escape sequence with \*, such as \\n -> \n
+	// (happens when reading from console or file)
+	escapeSeqReplacements = map[string]string{
+		"\\a":  "\a",
+		"\\b":  "\b",
+		"\\t":  "\t",
+		"\\n":  "\n",
+		"\\r":  "\r",
+		"\\f":  "\f",
+		"\\v":  "\v",
+		"\\\"": "\"",
 	}
 )
 
+// init is called when the package is first loaded (before main)
+func init() {
+	instrToStrMap = make(map[Bytecode]string, len(strToInstrMap))
+	for s, b := range strToInstrMap {
+		instrToStrMap[b] = s
+	}
+}
+
 // Convert bytecode to string
 func (b Bytecode) String() string {
-	switch b {
-	case Nop:
-		return "nop"
-	case Byte:
-		return "byte"
-	case Const:
-		return "const"
-	case Load:
-		return "load"
-	case Store:
-		return "store"
-	case Loadp8:
-		return "loadp8"
-	case Loadp16:
-		return "loadp16"
-	case Loadp32:
-		return "loadp32"
-	case Storep8:
-		return "storep8"
-	case Storep16:
-		return "storep16"
-	case Storep32:
-		return "storep32"
-	case Push:
-		return "push"
-	case Pop:
-		return "pop"
-	case Addi:
-		return "addi"
-	case Addf:
-		return "addf"
-	case Subi:
-		return "subi"
-	case Subf:
-		return "subf"
-	case Muli:
-		return "muli"
-	case Mulf:
-		return "mulf"
-	case Divi:
-		return "divi"
-	case Divf:
-		return "divf"
-	case Jmp:
-		return "jmp"
-	case Jz:
-		return "jz"
-	case Jnz:
-		return "jnz"
-	case Jle:
-		return "jle"
-	case Jl:
-		return "jl"
-	case Jge:
-		return "jge"
-	case Jg:
-		return "jg"
-	case Cmpu:
-		return "cmpu"
-	case Cmps:
-		return "cmps"
-	case Cmpf:
-		return "cmpf"
-	default:
-		return "?unknown?"
+	str, ok := instrToStrMap[b]
+	if !ok {
+		str = "?unknown?"
 	}
+	return str
 }
 
 // True if the bytecode requires an argument to be paired
@@ -236,22 +264,6 @@ func (b Bytecode) RequiresOpArg() bool {
 	return b == Const || b == Byte ||
 		b == Push || b == Pop ||
 		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg
-}
-
-// Each register is just a bit pattern with no concept of
-// type (signed, unsigned int or float)
-type Register uint32
-
-// Laid out this way so that sizeof(Instruction) == 8
-type Instruction struct {
-	code Bytecode
-
-	// additional data we use for state
-	// 		const: extra[0] tells const how many bytes to use to represent the constant
-	extra [3]byte
-
-	// argument to the bytecode itself
-	arg uint32
 }
 
 func NewInstruction(code Bytecode, arg uint32, extra ...byte) Instruction {
@@ -275,22 +287,16 @@ func (i Instruction) String() string {
 	}
 }
 
-type GVM struct {
-	registers [NumRegisters]Register
-	stack     [StackSize]byte
-	program   []Instruction
-}
-
 func uint32FromBytes(bytes []byte) uint32 {
 	return binary.LittleEndian.Uint32(bytes[:4])
 }
 
-func float32FromBytes(bytes []byte) float32 {
-	return math.Float32frombits(uint32FromBytes(bytes[:4]))
+func int32FromBytes(bytes []byte) int32 {
+	return int32(uint32FromBytes(bytes))
 }
 
-func uint16ToBytes(u uint16, bytes []byte) {
-	binary.LittleEndian.PutUint16(bytes[:2], u)
+func float32FromBytes(bytes []byte) float32 {
+	return math.Float32frombits(uint32FromBytes(bytes[:4]))
 }
 
 func uint32ToBytes(u uint32, bytes []byte) {
@@ -311,16 +317,9 @@ func (vm *GVM) StackPointer() *Register {
 
 func (vm *GVM) PrintCurrentState() {
 	fmt.Println("->\t\tregisters:", vm.registers)
-	fmt.Println("->\t\tstack:", vm.stack[0:*vm.StackPointer()])
-	// fmt.Print("->\t\tstack: [")
-	// for i := int32(*vm.StackPointer()) - 1; i >= 0; i-- {
-	// 	if i == 0 {
-	// 		fmt.Printf("%d", vm.stack[i])
-	// 	} else {
-	// 		fmt.Printf("%d ", vm.stack[i])
-	// 	}
-	// }
-	// fmt.Println("]")
+	// Prints the stack in reverse order, meaning the first element is actually the last
+	// that will be removed
+	fmt.Println("->\t\treverse stack:", vm.stack[0:*vm.StackPointer()])
 }
 
 func (vm *GVM) peekStack(offset uint32) []byte {
@@ -333,19 +332,6 @@ func (vm *GVM) popStack() []byte {
 	start, end := *sp-Register(VArchBytes), *sp
 	*sp = start
 	return vm.stack[start:end]
-}
-
-// Constrains to types we can freely interpret their 32 bit pattern
-type numeric32 interface {
-	int32 | uint32 | float32
-}
-
-type numeric interface {
-	int8 | uint8 | int16 | uint16 | numeric32
-}
-
-type uinteger interface {
-	uint8 | uint16 | uint32
 }
 
 func (vm *GVM) pushStackByte(value uint32) {
@@ -376,13 +362,12 @@ func (vm *GVM) PrintProgram() {
 	}
 }
 
-func compare[T numeric32](vm *GVM) {
-	arg0 := uint32FromBytes(vm.popStack())
+func compare[T numeric32](vm *GVM, convertFunc func([]byte) T) {
+	arg0Bytes := vm.popStack()
 	arg1Bytes := vm.peekStack(VArchBytes)
-	arg1 := uint32FromBytes(arg1Bytes)
 
-	a0T := T(arg0)
-	a1T := T(arg1)
+	a0T := convertFunc(arg0Bytes)
+	a1T := convertFunc(arg1Bytes)
 	var result uint32
 	if a0T < a1T {
 		result = math.MaxUint32 // -1 when converted to int32
@@ -396,53 +381,67 @@ func compare[T numeric32](vm *GVM) {
 	uint32ToBytes(result, arg1Bytes)
 }
 
-func arithAddi(x, y uint32, bytes []byte) {
-	// Overwrite bytes with result
-	uint32ToBytes(x+y, bytes)
+func arithAddi(x, y []byte) {
+	// Overwrite y with result
+	uint32ToBytes(uint32FromBytes(x)+uint32FromBytes(y), y)
 }
 
-func arithAddf(x, y float32, bytes []byte) {
-	// Overwrite bytes with result
-	float32ToBytes(x+y, bytes)
+func arithAddf(x, y []byte) {
+	// Overwrite y with result
+	float32ToBytes(float32FromBytes(x)+float32FromBytes(y), y)
 }
 
-func arithSubi(x, y uint32, bytes []byte) {
-	// Overwrite bytes with result
-	uint32ToBytes(x-y, bytes)
+func arithSubi(x, y []byte) {
+	// Overwrite y with result
+	uint32ToBytes(uint32FromBytes(x)-uint32FromBytes(y), y)
 }
 
-func arithSubf(x, y float32, bytes []byte) {
-	// Overwrite bytes with result
-	float32ToBytes(x-y, bytes)
+func arithSubf(x, y []byte) {
+	// Overwrite y with result
+	float32ToBytes(float32FromBytes(x)-float32FromBytes(y), y)
 }
 
-func arithMuli(x, y uint32, bytes []byte) {
-	// Overwrite bytes with result
-	uint32ToBytes(x*y, bytes)
+func arithMuli(x, y []byte) {
+	// Overwrite y with result
+	uint32ToBytes(uint32FromBytes(x)*uint32FromBytes(y), y)
 }
 
-func arithMulf(x, y float32, bytes []byte) {
-	// Overwrite bytes with result
-	float32ToBytes(x*y, bytes)
+func arithMulf(x, y []byte) {
+	// Overwrite y with result
+	float32ToBytes(float32FromBytes(x)*float32FromBytes(y), y)
 }
 
-func arithDivi(x, y uint32, bytes []byte) {
-	// Overwrite bytes with result
-	uint32ToBytes(x/y, bytes)
+func arithDivi(x, y []byte) {
+	// Overwrite y with result
+	uint32ToBytes(uint32FromBytes(x)/uint32FromBytes(y), y)
 }
 
-func arithDivf(x, y float32, bytes []byte) {
-	// Overwrite bytes with result
-	float32ToBytes(x/y, bytes)
+func arithDivf(x, y []byte) {
+	// Overwrite y with result
+	float32ToBytes(float32FromBytes(x)/float32FromBytes(y), y)
 }
 
-func arithmetic[T numeric32](vm *GVM, op func(T, T, []byte)) {
-	arg0 := uint32FromBytes(vm.popStack())
+func logicalAnd(x, y []byte) {
+	// Overwrite y with result
+	uint32ToBytes(uint32FromBytes(x)&uint32FromBytes(y), y)
+}
+
+func logicalOr(x, y []byte) {
+	// Overwrite y with result
+	uint32ToBytes(uint32FromBytes(x)|uint32FromBytes(y), y)
+}
+
+func logicalXor(x, y []byte) {
+	// Overwrite y with result
+	uint32ToBytes(uint32FromBytes(x)^uint32FromBytes(y), y)
+}
+
+func arithmeticLogical(vm *GVM, op func([]byte, []byte)) {
+	arg0Bytes := vm.popStack()
 	arg1Bytes := vm.peekStack(VArchBytes)
-	arg1 := uint32FromBytes(arg1Bytes)
 
 	// Overwrites arg1Bytes with result of op
-	op(T(arg0), T(arg1), arg1Bytes)
+	op(arg0Bytes, arg1Bytes)
 }
 
 func loadpX[T numeric](vm *GVM) {
@@ -485,6 +484,7 @@ func (vm *GVM) execNextInstruction() error {
 
 	instr := vm.program[*pc]
 	*pc += 1
+
 	switch instr.code {
 	case Nop:
 	case Byte:
@@ -525,21 +525,31 @@ func (vm *GVM) execNextInstruction() error {
 		sp := vm.StackPointer()
 		*sp = *sp - Register(instr.arg)
 	case Addi:
-		arithmetic(vm, arithAddi)
+		arithmeticLogical(vm, arithAddi)
 	case Addf:
-		arithmetic(vm, arithAddf)
+		arithmeticLogical(vm, arithAddf)
 	case Subi:
-		arithmetic(vm, arithSubi)
+		arithmeticLogical(vm, arithSubi)
 	case Subf:
-		arithmetic(vm, arithSubf)
+		arithmeticLogical(vm, arithSubf)
 	case Muli:
-		arithmetic(vm, arithMuli)
+		arithmeticLogical(vm, arithMuli)
 	case Mulf:
-		arithmetic(vm, arithMulf)
+		arithmeticLogical(vm, arithMulf)
 	case Divi:
-		arithmetic(vm, arithDivi)
+		arithmeticLogical(vm, arithDivi)
 	case Divf:
-		arithmetic(vm, arithDivf)
+		arithmeticLogical(vm, arithDivf)
+	case Not:
+		arg := vm.peekStack(VArchBytes)
+		// Invert all bits, store result in arg
+		uint32ToBytes(^uint32FromBytes(arg), arg)
+	case And:
+		arithmeticLogical(vm, logicalAnd)
+	case Or:
+		arithmeticLogical(vm, logicalOr)
+	case Xor:
+		arithmeticLogical(vm, logicalXor)
 	case Jmp:
 		*pc = Register(instr.arg)
 	case Jz:
@@ -573,11 +583,23 @@ func (vm *GVM) execNextInstruction() error {
 			*pc = Register(instr.arg)
 		}
 	case Cmpu:
-		compare[uint32](vm)
+		compare(vm, uint32FromBytes)
 	case Cmps:
-		compare[int32](vm)
+		compare(vm, int32FromBytes)
 	case Cmpf:
-		compare[float32](vm)
+		compare(vm, float32FromBytes)
+	case Writec:
+		character := rune(uint32FromBytes(vm.popStack()))
+		fmt.Print(string(character))
+	case Readc:
+		character, _, err := vm.stdin.ReadRune()
+		if err != nil {
+			return errIO
+		}
+		vm.pushStack(uint32(character))
+	case Exit:
+		// Sets the pc to be one after the last instruction
+		*pc = Register(len(vm.program))
 	default:
 		return errUnknownInstruction
 	}
@@ -585,8 +607,74 @@ func (vm *GVM) execNextInstruction() error {
 	return nil
 }
 
-func NewVirtualMachine(file string) (*GVM, error) {
-	return &GVM{program: make([]Instruction, 0)}, nil
+func NewVirtualMachine(files ...string) (*GVM, error) {
+	vm := &GVM{stdin: bufio.NewReader(os.Stdin)}
+	file, err := os.Open(files[0])
+	if err != nil {
+		fmt.Println("Could not read", files[0])
+		return nil, err
+	}
+
+	labels := make(map[string]string)
+	lines := make([]string, 0)
+	reader := bufio.NewReader(file)
+
+	// Allows us to easily find and replace commands from start to end of line
+	comments := regexp.MustCompile("//.*")
+
+	// First preprocess line to remove whitespace lines and convert labels
+	// into line numbers
+	for {
+		line, _, err := reader.ReadLine()
+		if err != nil {
+			break
+		}
+
+		lines = preprocessLine(string(line), comments, labels, lines)
+	}
+
+	vm.program = make([]Instruction, 0, len(lines))
+
+	for _, line := range lines {
+		// Replace all labels with their instruction address
+		for label, lineNum := range labels {
+			line = strings.ReplaceAll(line, label, lineNum)
+		}
+
+		instrs, err := parseInputLine(line)
+		if err != nil {
+			return nil, err
+		}
+
+		vm.program = append(vm.program, instrs...)
+	}
+
+	return vm, nil
+}
+
+func preprocessLine(line string, comments *regexp.Regexp, labels map[string]string, lines []string) []string {
+	line = comments.ReplaceAllString(line, "")
+	line = strings.TrimSpace(line)
+
+	// Check if the line was pure whitespace
+	if line == "" {
+		return lines
+		// Check if the line is a label
+	} else if strings.HasSuffix(line, ":") {
+		// Get rid of the : in the label
+		line = strings.ReplaceAll(line, ":", "")
+		labels[line] = fmt.Sprintf("%d", len(lines))
+		return append(lines, "nop")
+	} else {
+		return append(lines, line)
+	}
+}
+
+func insertEscapeSeqReplacements(line string) string {
+	for orig, replace := range escapeSeqReplacements {
+		line = strings.ReplaceAll(line, orig, replace)
+	}
+	return line
 }
 
 func parseInputLine(line string) ([]Instruction, error) {
@@ -596,7 +684,7 @@ func parseInputLine(line string) ([]Instruction, error) {
 	}
 
 	parsed := strings.Split(line, " ")
-	code, ok := instrMap[parsed[0]]
+	code, ok := strToInstrMap[parsed[0]]
 	if !ok {
 		return nil, fmt.Errorf("unknown bytecode: %s", parsed[0])
 	}
@@ -608,6 +696,7 @@ func parseInputLine(line string) ([]Instruction, error) {
 				return nil, errors.New("invalid syntax: unterminated character")
 			}
 
+			parsed[1] = insertEscapeSeqReplacements(parsed[1])
 			runes := []rune(parsed[1])
 			if len(runes) != 3 {
 				return nil, errors.New("character value to large to fit into 32 bits")
@@ -623,8 +712,11 @@ func parseInputLine(line string) ([]Instruction, error) {
 				return nil, errors.New("invalid syntax: unterminated string")
 			}
 
-			parsed[1] = strings.ReplaceAll(parsed[1], "\"", "")
+			parsed[1] = insertEscapeSeqReplacements(parsed[1])
 			bytes := []byte(parsed[1])
+			// Slice of bytes to get rid of start and end quotes
+			bytes = bytes[1 : len(bytes)-1]
+
 			instrs := make([]Instruction, len(bytes))
 			// Expand const "string" instruction into a series of 1-byte consts in reverse order
 			for i := 0; i < len(instrs); i++ {
@@ -663,33 +755,19 @@ func main() {
 		panic("Critical error: instruction struct is not 8 bytes")
 	}
 
-	reader := bufio.NewReader(os.Stdin)
-	vm, err := NewVirtualMachine("")
+	vm, err := NewVirtualMachine("examples/test.b")
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
 	for {
-		fmt.Print("-> ")
-		line, _ := reader.ReadString('\n')
-		line = strings.TrimSpace(line)
-		if line == "program" {
-			vm.PrintProgram()
-		} else if line == "state" {
-			vm.PrintCurrentState()
-		} else {
-			instr, err := parseInputLine(line)
-			if err != nil {
-				fmt.Println(err)
-			} else {
-				vm.program = append(vm.program, instr...)
-				for {
-					if e := vm.execNextInstruction(); e != nil {
-						break
-					}
-				}
-			}
+		err = vm.execNextInstruction()
+		if err != nil {
+			break
 		}
 	}
+
+	// Insert final newline before returning
+	fmt.Println()
 }
