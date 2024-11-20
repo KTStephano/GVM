@@ -148,7 +148,12 @@ type GVM struct {
 	registers [NumRegisters]Register
 	stack     [StackSize]byte
 	program   []Instruction
-	stdin     *bufio.Reader
+
+	// Allows vm to write output
+	stdin *bufio.Reader
+
+	// This gets written to whenever program encounters a normal or critical error
+	errcode error
 }
 
 // Constrains to types we can freely interpret their 32 bit pattern
@@ -323,11 +328,15 @@ func (vm *GVM) PrintCurrentState() {
 }
 
 func (vm *GVM) peekStack(offset uint32) []byte {
+	vm.errcode = errStackUnderflow
+
 	sp := vm.StackPointer()
 	return vm.stack[*sp-Register(offset) : *sp]
 }
 
 func (vm *GVM) popStack() []byte {
+	vm.errcode = errStackUnderflow
+
 	sp := vm.StackPointer()
 	start, end := *sp-Register(VArchBytes), *sp
 	*sp = start
@@ -335,6 +344,8 @@ func (vm *GVM) popStack() []byte {
 }
 
 func (vm *GVM) pushStackByte(value uint32) {
+	vm.errcode = errStackOverflow
+
 	sp := vm.StackPointer()
 	start, end := *sp, *sp+Register(1)
 	*sp = end
@@ -342,6 +353,8 @@ func (vm *GVM) pushStackByte(value uint32) {
 }
 
 func (vm *GVM) pushStack(value any) {
+	vm.errcode = errStackOverflow
+
 	sp := vm.StackPointer()
 	start, end := *sp, *sp+Register(VArchBytes)
 	*sp = end
@@ -351,6 +364,8 @@ func (vm *GVM) pushStack(value any) {
 	case float32:
 		float32ToBytes(v, vm.stack[start:end])
 	default:
+		// Shouldn't get here since this is called internally and indicates
+		// a VM bug if it triggers
 		panic("Unknown type: should be unsigned 32 bit or float 32 bit")
 	}
 }
@@ -448,6 +463,8 @@ func loadpX[T numeric](vm *GVM) {
 	addrBytes := vm.peekStack(VArchBytes)
 	addr := uint32FromBytes(addrBytes)
 
+	vm.errcode = errSegmentationFault
+
 	var v T
 	sizeof := unsafe.Sizeof(v)
 	result := uint32(0)
@@ -469,6 +486,8 @@ func storepX[T uinteger](vm *GVM) {
 	addr := uint32FromBytes(vm.popStack())
 	valueBytes := vm.popStack()
 
+	vm.errcode = errSegmentationFault
+
 	var v T
 	sizeof := uint32(unsafe.Sizeof(v))
 	for i := uint32(0); i < sizeof; i++ {
@@ -476,10 +495,11 @@ func storepX[T uinteger](vm *GVM) {
 	}
 }
 
-func (vm *GVM) execNextInstruction() error {
+func (vm *GVM) execNextInstruction() {
 	pc := vm.ProgramCounter()
 	if *pc >= Register(len(vm.program)) {
-		return errProgramFinished
+		vm.errcode = errProgramFinished
+		return
 	}
 
 	instr := vm.program[*pc]
@@ -501,7 +521,8 @@ func (vm *GVM) execNextInstruction() error {
 		regIdx := uint32FromBytes(vm.popStack())
 		if regIdx < 2 {
 			// not allowed to write to program counter or stack pointer
-			return errIllegalOperation
+			vm.errcode = errIllegalOperation
+			return
 		}
 
 		regValue := uint32FromBytes(vm.popStack())
@@ -594,17 +615,22 @@ func (vm *GVM) execNextInstruction() error {
 	case Readc:
 		character, _, err := vm.stdin.ReadRune()
 		if err != nil {
-			return errIO
+			vm.errcode = errIO
+			return
 		}
 		vm.pushStack(uint32(character))
 	case Exit:
 		// Sets the pc to be one after the last instruction
 		*pc = Register(len(vm.program))
 	default:
-		return errUnknownInstruction
+		// Shouldn't get here since we preprocess+parse all source into
+		// valid instructions before executing
+		vm.errcode = errUnknownInstruction
+		return
 	}
 
-	return nil
+	// Unset flag - no errors
+	vm.errcode = nil
 }
 
 func NewVirtualMachine(files ...string) (*GVM, error) {
@@ -736,7 +762,18 @@ func parseInputLine(line string) ([]Instruction, error) {
 
 				return []Instruction{NewInstruction(code, math.Float32bits(float32(arg)))}, nil
 			} else {
-				arg, err := strconv.ParseInt(parsed[1], 10, 32)
+				var arg int64
+				var err error
+				base := 10
+				// Check for hex values
+				if strings.HasPrefix(parsed[1], "0x") {
+					base = 16
+					// Remove 0x from input
+					parsed[1] = strings.Replace(parsed[1], "0x", "", 1)
+				}
+
+				arg, err = strconv.ParseInt(parsed[1], base, 32)
+				fmt.Println(arg)
 				if err != nil {
 					return nil, err
 				}
@@ -761,9 +798,19 @@ func main() {
 		return
 	}
 
+	// Allows us to handle critical errors that came up during execuion
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("%+v\n", vm.errcode)
+		}
+	}()
+
 	for {
-		err = vm.execNextInstruction()
-		if err != nil {
+		vm.execNextInstruction()
+		if vm.errcode != nil {
+			if vm.errcode != errProgramFinished {
+				fmt.Print(vm.errcode)
+			}
 			break
 		}
 	}
