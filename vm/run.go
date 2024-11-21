@@ -41,7 +41,7 @@ func (vm *VM) RunProgramDebugMode() {
 			line = strings.ToLower(strings.TrimSpace(line))
 		} else {
 			// Check if we've reached a breakpoint
-			currInstruction := int(*vm.programCounter())
+			currInstruction := int(*vm.pc)
 			if _, ok := breakAtLines[currInstruction]; lastBreakLine != currInstruction && ok {
 				fmt.Println("breakpoint")
 				vm.printCurrentState()

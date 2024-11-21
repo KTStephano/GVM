@@ -97,8 +97,11 @@ type debugSymbols struct {
 
 type VM struct {
 	registers [numRegisters]Register
-	stack     [stackSize]byte
-	program   []Instruction
+	pc        *Register // program counter
+	sp        *Register // stack pointer
+
+	stack   [stackSize]byte
+	program []Instruction
 
 	// Allows vm to read/write to some type of output
 	stdout *bufio.Writer
@@ -121,7 +124,8 @@ const (
 	numRegisters int = 32
 	stackSize    int = 65536
 	// 4 bytes since our virtual architecture is 32-bit
-	varchBytes = 4
+	varchBytes   = 4
+	varchBytesx2 = 2 * varchBytes
 )
 
 var (
@@ -134,6 +138,8 @@ var (
 
 func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 	vm := &VM{stdin: bufio.NewReader(os.Stdin)}
+	vm.pc = &vm.registers[0]
+	vm.sp = &vm.registers[1]
 
 	// If requested, set up the VM in debug mode
 	var debugSymMap map[int]string
@@ -201,16 +207,8 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 	return vm, nil
 }
 
-func (vm *VM) programCounter() *Register {
-	return &vm.registers[0]
-}
-
-func (vm *VM) stackPointer() *Register {
-	return &vm.registers[1]
-}
-
 func (vm *VM) formatInstructionStr(prefix string) string {
-	pc := vm.programCounter()
+	pc := vm.pc
 	if *pc < Register(len(vm.program)) {
 		fmtStr := prefix + " %d: %s"
 		if vm.debugSym != nil {
@@ -232,7 +230,7 @@ func (vm *VM) printCurrentState() {
 	fmt.Println("registers>", vm.registers)
 	// Prints the stack in reverse order, meaning the first element is actually the last
 	// that will be removed
-	fmt.Println("reverse stack>", vm.stack[0:*vm.stackPointer()])
+	fmt.Println("reverse stack>", vm.stack[:*vm.sp])
 
 	vm.printDebugOutput()
 }
@@ -274,28 +272,24 @@ func float32ToBytes(f float32, bytes []byte) {
 }
 
 func (vm *VM) peekStack(offset uint32) []byte {
-	sp := vm.stackPointer()
-	return vm.stack[*sp-Register(offset):]
+	return vm.stack[*vm.sp-Register(offset):]
 }
 
 func (vm *VM) popStack() []byte {
-	sp := vm.stackPointer()
-	start := *sp - Register(varchBytes)
-	*sp = start
+	start := *vm.sp - Register(varchBytes)
+	*vm.sp = start
 	return vm.stack[start:]
 }
 
 func (vm *VM) pushStackByte(value uint32) {
-	sp := vm.stackPointer()
-	start := *sp
-	*sp++
+	start := *vm.sp
+	*vm.sp++
 	vm.stack[start] = byte(value)
 }
 
 func (vm *VM) pushStack(value uint32) {
-	sp := vm.stackPointer()
-	start := *sp
-	*sp += Register(varchBytes)
+	start := *vm.sp
+	*vm.sp += Register(varchBytes)
 	uint32ToBytes(value, vm.stack[start:])
 }
 
@@ -409,7 +403,7 @@ func storepX(vm *VM, sizeof uint32) {
 }
 
 func (vm *VM) execNextInstruction() {
-	pc := vm.programCounter()
+	pc := vm.pc
 	if *pc >= Register(len(vm.program)) {
 		vm.errcode = errProgramFinished
 		return
@@ -450,12 +444,10 @@ func (vm *VM) execNextInstruction() {
 		storepX(vm, 4)
 	case Push:
 		bytes := uint32FromBytes(vm.popStack())
-		sp := vm.stackPointer()
-		*sp = *sp + Register(bytes)
+		*vm.sp = *vm.sp + Register(bytes)
 	case Pop:
 		bytes := uint32FromBytes(vm.popStack())
-		sp := vm.stackPointer()
-		*sp = *sp - Register(bytes)
+		*vm.sp = *vm.sp - Register(bytes)
 	case Addi:
 		arithmeticLogical(vm, arithAddi)
 	case Addf:
