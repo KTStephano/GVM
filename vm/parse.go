@@ -136,6 +136,10 @@ func parseInputLine(line [2]string) ([]Instruction, error) {
 			}
 		}
 	} else {
+		if code.RequiresOpArg() {
+			return nil, fmt.Errorf("%s requires an argument", code.String())
+		}
+
 		return []Instruction{NewInstruction(code, 0)}, nil
 	}
 }

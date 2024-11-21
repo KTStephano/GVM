@@ -26,11 +26,10 @@ import (
 
 	Possible bytecodes
 			nop   (no operation)
-			sp 	  (pushes value of stack pointer onto the stack)
 			byte  (pushes byte value onto the stack)
 			const (pushes const value onto stack (can be a label))
-			load  (loads value of register at index stack[0])
-			store (stores value of stack[1] to register at index stack[0])
+			load  (loads value of register)
+			store (stores value of stack[0] to register)
 			loadp8, loadp16, loadp32 (loads 8, 16 or 32 bit value from address at stack[0], widens to 32 bits)
 			storep8, storep16, storep32 (narrows stack[1] to 8, 16 or 32 bits and writes it to address at stack[0])
 
@@ -406,5 +405,146 @@ func storepX(vm *VM, sizeof uint32) {
 
 	for i := uint32(0); i < sizeof; i++ {
 		vm.stack[addr+i] = valueBytes[i]
+	}
+}
+
+func (vm *VM) execNextInstruction() {
+	pc := vm.programCounter()
+	if *pc >= Register(len(vm.program)) {
+		vm.errcode = errProgramFinished
+		return
+	}
+
+	instr := vm.program[*pc]
+	*pc += 1
+
+	switch instr.code {
+	case Nop:
+	case Byte:
+		vm.pushStackByte(instr.arg)
+	case Const:
+		vm.pushStack(instr.arg)
+	case Load:
+		vm.pushStack(uint32(vm.registers[instr.arg]))
+	case Store:
+		regIdx := uint32(instr.arg)
+		if regIdx < 2 {
+			// not allowed to write to program counter or stack pointer
+			vm.errcode = errIllegalOperation
+			return
+		}
+
+		regValue := uint32FromBytes(vm.popStack())
+		vm.registers[regIdx] = Register(regValue)
+	case Loadp8:
+		loadpX(vm, 1)
+	case Loadp16:
+		loadpX(vm, 2)
+	case Loadp32:
+		loadpX(vm, 4)
+	case Storep8:
+		storepX(vm, 1)
+	case Storep16:
+		storepX(vm, 2)
+	case Storep32:
+		storepX(vm, 4)
+	case Push:
+		bytes := uint32FromBytes(vm.popStack())
+		sp := vm.stackPointer()
+		*sp = *sp + Register(bytes)
+	case Pop:
+		bytes := uint32FromBytes(vm.popStack())
+		sp := vm.stackPointer()
+		*sp = *sp - Register(bytes)
+	case Addi:
+		arithmeticLogical(vm, arithAddi)
+	case Addf:
+		arithmeticLogical(vm, arithAddf)
+	case Subi:
+		arithmeticLogical(vm, arithSubi)
+	case Subf:
+		arithmeticLogical(vm, arithSubf)
+	case Muli:
+		arithmeticLogical(vm, arithMuli)
+	case Mulf:
+		arithmeticLogical(vm, arithMulf)
+	case Divi:
+		arithmeticLogical(vm, arithDivi)
+	case Divf:
+		arithmeticLogical(vm, arithDivf)
+	case Not:
+		arg := vm.peekStack(varchBytes)
+		// Invert all bits, store result in arg
+		uint32ToBytes(^uint32FromBytes(arg), arg)
+	case And:
+		arithmeticLogical(vm, logicalAnd)
+	case Or:
+		arithmeticLogical(vm, logicalOr)
+	case Xor:
+		arithmeticLogical(vm, logicalXor)
+	case Jmp:
+		addr := uint32FromBytes(vm.popStack())
+		*pc = Register(addr)
+	case Jz:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(varchBytes))
+		if value == 0 {
+			*pc = Register(addr)
+		}
+	case Jnz:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(varchBytes))
+		if value != 0 {
+			*pc = Register(addr)
+		}
+	case Jle:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(varchBytes))
+		if int32(value) <= 0 {
+			*pc = Register(addr)
+		}
+	case Jl:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(varchBytes))
+		if int32(value) < 0 {
+			*pc = Register(addr)
+		}
+	case Jge:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(varchBytes))
+		if int32(value) >= 0 {
+			*pc = Register(addr)
+		}
+	case Jg:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(varchBytes))
+		if int32(value) > 0 {
+			*pc = Register(addr)
+		}
+	case Cmpu:
+		compare(vm, uint32FromBytes)
+	case Cmps:
+		compare(vm, int32FromBytes)
+	case Cmpf:
+		compare(vm, float32FromBytes)
+	case Writec:
+		character := rune(uint32FromBytes(vm.popStack()))
+		vm.stdout.WriteString(string(character))
+		vm.stdout.Flush()
+	case Readc:
+		character, _, err := vm.stdin.ReadRune()
+		if err != nil {
+			vm.errcode = errIO
+			return
+		}
+		vm.pushStack(uint32(character))
+	case Exit:
+		// Sets the pc to be one after the last instruction
+		*pc = Register(len(vm.program))
+	default:
+		// Shouldn't get here since we preprocess+parse all source into
+		// valid instructions before executing
+		vm.errcode = errUnknownInstruction
+		return
 	}
 }

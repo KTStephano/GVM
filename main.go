@@ -31,8 +31,8 @@ func main() {
 	}
 
 	if *debugVM {
-		vm.ExecProgramDebugMode()
+		vm.RunProgramDebugMode()
 	} else {
-		vm.ExecProgram()
+		vm.RunProgram()
 	}
 }

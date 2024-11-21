@@ -9,44 +9,43 @@ type Bytecode byte
 
 const (
 	Nop      Bytecode = 0x00
-	Sp       Bytecode = 0x01
-	Byte     Bytecode = 0x02
-	Const    Bytecode = 0x03
-	Load     Bytecode = 0x04
-	Store    Bytecode = 0x05
-	Loadp8   Bytecode = 0x06
-	Loadp16  Bytecode = 0x07
-	Loadp32  Bytecode = 0x08
-	Storep8  Bytecode = 0x09
-	Storep16 Bytecode = 0x0A
-	Storep32 Bytecode = 0x0B
-	Push     Bytecode = 0x0C
-	Pop      Bytecode = 0x0D
-	Addi     Bytecode = 0x0E
-	Addf     Bytecode = 0x0F
-	Subi     Bytecode = 0x10
-	Subf     Bytecode = 0x11
-	Muli     Bytecode = 0x12
-	Mulf     Bytecode = 0x13
-	Divi     Bytecode = 0x14
-	Divf     Bytecode = 0x15
-	Not      Bytecode = 0x16
-	And      Bytecode = 0x17
-	Or       Bytecode = 0x18
-	Xor      Bytecode = 0x19
-	Jmp      Bytecode = 0x1A
-	Jz       Bytecode = 0x1B
-	Jnz      Bytecode = 0x1C
-	Jle      Bytecode = 0x1D
-	Jl       Bytecode = 0x1E
-	Jge      Bytecode = 0x1F
-	Jg       Bytecode = 0x20
-	Cmpu     Bytecode = 0x21
-	Cmps     Bytecode = 0x22
-	Cmpf     Bytecode = 0x23
-	Writec   Bytecode = 0x24
-	Readc    Bytecode = 0x25
-	Exit     Bytecode = 0x26
+	Byte     Bytecode = 0x01
+	Const    Bytecode = 0x02
+	Load     Bytecode = 0x03
+	Store    Bytecode = 0x04
+	Loadp8   Bytecode = 0x05
+	Loadp16  Bytecode = 0x06
+	Loadp32  Bytecode = 0x07
+	Storep8  Bytecode = 0x08
+	Storep16 Bytecode = 0x09
+	Storep32 Bytecode = 0x0A
+	Push     Bytecode = 0x0B
+	Pop      Bytecode = 0x0C
+	Addi     Bytecode = 0x0D
+	Addf     Bytecode = 0x0E
+	Subi     Bytecode = 0x0F
+	Subf     Bytecode = 0x10
+	Muli     Bytecode = 0x11
+	Mulf     Bytecode = 0x12
+	Divi     Bytecode = 0x13
+	Divf     Bytecode = 0x14
+	Not      Bytecode = 0x15
+	And      Bytecode = 0x16
+	Or       Bytecode = 0x17
+	Xor      Bytecode = 0x18
+	Jmp      Bytecode = 0x19
+	Jz       Bytecode = 0x1A
+	Jnz      Bytecode = 0x1B
+	Jle      Bytecode = 0x1C
+	Jl       Bytecode = 0x1D
+	Jge      Bytecode = 0x1E
+	Jg       Bytecode = 0x1F
+	Cmpu     Bytecode = 0x20
+	Cmps     Bytecode = 0x21
+	Cmpf     Bytecode = 0x22
+	Writec   Bytecode = 0x23
+	Readc    Bytecode = 0x24
+	Exit     Bytecode = 0x25
 )
 
 // Each register is just a bit pattern with no concept of
@@ -69,7 +68,6 @@ var (
 	// Maps from string -> instruction
 	strToInstrMap = map[string]Bytecode{
 		"nop":      Nop,
-		"sp":       Sp,
 		"byte":     Byte,
 		"const":    Const,
 		"load":     Load,
@@ -138,7 +136,7 @@ func (b Bytecode) String() string {
 // True if the bytecode requires an argument to be paired
 // with it, such as const X
 func (b Bytecode) RequiresOpArg() bool {
-	return b == Const || b == Byte
+	return b == Const || b == Byte || b == Load || b == Store
 }
 
 func NewInstruction(code Bytecode, arg uint32, extra ...byte) Instruction {
