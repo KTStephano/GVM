@@ -56,7 +56,7 @@ func (vm *VM) RunProgramDebugMode() {
 			// Reset break flag
 			lastBreakLine = -1
 
-			vm.execNextInstruction()
+			vm.execInstructions(true)
 			if waitForInput {
 				// Only print state after each instruction if we're also waiting for input
 				// after each instruction
@@ -94,13 +94,20 @@ func (vm *VM) RunProgramDebugMode() {
 func (vm *VM) RunProgram() {
 	defer getDefaultRecoverFuncForVM(vm)()
 
-	for {
-		vm.execNextInstruction()
-		if err := vm.errcode; err != nil {
-			if err != errProgramFinished {
-				fmt.Println(err)
-			}
-			break
+	vm.execInstructions(false)
+	if err := vm.errcode; err != nil {
+		if err != errProgramFinished {
+			fmt.Println(err)
 		}
 	}
+
+	// for {
+	// 	vm.execNextInstruction(false)
+	// 	if err := vm.errcode; err != nil {
+	// 		if err != errProgramFinished {
+	// 			fmt.Println(err)
+	// 		}
+	// 		break
+	// 	}
+	// }
 }

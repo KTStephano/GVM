@@ -387,192 +387,189 @@ func logicalXor(x, y []byte) {
 	uint32ToBytes(uint32FromBytes(x)^uint32FromBytes(y), y)
 }
 
-func storepX(vm *VM, sizeof uint32) {
-	addrBytes, valueBytes := vm.popStackx2()
-	addr := uint32FromBytes(addrBytes)
-
-	for i := uint32(0); i < sizeof; i++ {
-		vm.stack[addr+i] = valueBytes[i]
-	}
-}
-
 // This is considered a tight loop. It's ok to move certain things to functions
 // if the functions are very simple (meaning Go's inlining rules take over), but
 // otherwise it's best to try and embed the logic directly into the switch statement.
-func (vm *VM) execNextInstruction() {
-	pc := vm.pc
-	if *pc >= Register(len(vm.program)) {
-		vm.errcode = errProgramFinished
-		return
-	}
-
-	instr := vm.program[*pc]
-	*pc += 1
-
-	switch instr.code {
-	case Nop:
-	case Byte:
-		vm.pushStackByte(instr.arg)
-	case Const:
-		vm.pushStack(instr.arg)
-	case Load:
-		vm.pushStack(vm.registers[instr.arg])
-	case Store:
-		regIdx := instr.arg
-		if regIdx < 2 {
-			// not allowed to write to program counter or stack pointer
-			vm.errcode = errIllegalOperation
+func (vm *VM) execInstructions(singleStep bool) {
+	for {
+		pc := vm.pc
+		if *pc >= Register(len(vm.program)) {
+			vm.errcode = errProgramFinished
 			return
 		}
 
-		regValue := uint32FromBytes(vm.popStack())
-		vm.registers[regIdx] = Register(regValue)
-	case Loadp8:
-		addrBytes := vm.peekStack(varchBytes)
-		addr := uint32FromBytes(addrBytes)
-		// overwrite addrBytes with memory value
-		uint32ToBytes(uint32(vm.stack[addr]), addrBytes)
-	case Loadp16:
-		addrBytes := vm.peekStack(varchBytes)
-		addr := uint32FromBytes(addrBytes)
-		// overwrite addrBytes with memory value
-		uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.stack[addr:])), addrBytes)
-	case Loadp32:
-		addrBytes := vm.peekStack(varchBytes)
-		addr := uint32FromBytes(addrBytes)
-		// overwrite addrBytes with memory value
-		uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.stack[addr:])), addrBytes)
-	case Storep8:
-		addrBytes, valueBytes := vm.popStackx2()
-		addr := uint32FromBytes(addrBytes)
-		vm.stack[addr] = valueBytes[0]
-	case Storep16:
-		addrBytes, valueBytes := vm.popStackx2()
-		addr := uint32FromBytes(addrBytes)
+		instr := vm.program[*pc]
+		*pc += 1
 
-		// unrolled loop
-		vm.stack[addr] = valueBytes[0]
-		vm.stack[addr+1] = valueBytes[1]
-	case Storep32:
-		addrBytes, valueBytes := vm.popStackx2()
-		addr := uint32FromBytes(addrBytes)
+		switch instr.code {
+		case Nop:
+		case Byte:
+			vm.pushStackByte(instr.arg)
+		case Const:
+			vm.pushStack(instr.arg)
+		case Load:
+			vm.pushStack(vm.registers[instr.arg])
+		case Store:
+			regIdx := instr.arg
+			if regIdx < 2 {
+				// not allowed to write to program counter or stack pointer
+				vm.errcode = errIllegalOperation
+				return
+			}
 
-		// unrolled loop
-		vm.stack[addr+0] = valueBytes[0]
-		vm.stack[addr+1] = valueBytes[1]
-		vm.stack[addr+2] = valueBytes[2]
-		vm.stack[addr+3] = valueBytes[3]
-	case Push:
-		bytes := uint32FromBytes(vm.popStack())
-		*vm.sp = *vm.sp + Register(bytes)
-	case Pop:
-		bytes := uint32FromBytes(vm.popStack())
-		*vm.sp = *vm.sp - Register(bytes)
-	case Addi:
-		arg0Bytes, arg1Bytes := vm.popPeekStack()
-		// Overwrites arg1Bytes with result of op
-		arithAddi(arg0Bytes, arg1Bytes)
-	case Addf:
-		arg0Bytes, arg1Bytes := vm.popPeekStack()
-		// Overwrites arg1Bytes with result of op
-		arithAddf(arg0Bytes, arg1Bytes)
-	case Subi:
-		arg0Bytes, arg1Bytes := vm.popPeekStack()
-		// Overwrites arg1Bytes with result of op
-		arithSubi(arg0Bytes, arg1Bytes)
-	case Subf:
-		arg0Bytes, arg1Bytes := vm.popPeekStack()
-		// Overwrites arg1Bytes with result of op
-		arithSubf(arg0Bytes, arg1Bytes)
-	case Muli:
-		arg0Bytes, arg1Bytes := vm.popPeekStack()
-		// Overwrites arg1Bytes with result of op
-		arithMuli(arg0Bytes, arg1Bytes)
-	case Mulf:
-		arg0Bytes, arg1Bytes := vm.popPeekStack()
-		// Overwrites arg1Bytes with result of op
-		arithMulf(arg0Bytes, arg1Bytes)
-	case Divi:
-		arg0Bytes, arg1Bytes := vm.popPeekStack()
-		// Overwrites arg1Bytes with result of op
-		arithDivi(arg0Bytes, arg1Bytes)
-	case Divf:
-		arg0Bytes, arg1Bytes := vm.popPeekStack()
-		// Overwrites arg1Bytes with result of op
-		arithDivf(arg0Bytes, arg1Bytes)
-	case Not:
-		arg := vm.peekStack(varchBytes)
-		// Invert all bits, store result in arg
-		uint32ToBytes(^uint32FromBytes(arg), arg)
-	case And:
-		arg0Bytes, arg1Bytes := vm.popPeekStack()
-		// Overwrites arg1Bytes with result of op
-		logicalAnd(arg0Bytes, arg1Bytes)
-	case Or:
-		arg0Bytes, arg1Bytes := vm.popPeekStack()
-		// Overwrites arg1Bytes with result of op
-		logicalOr(arg0Bytes, arg1Bytes)
-	case Xor:
-		arg0Bytes, arg1Bytes := vm.popPeekStack()
-		// Overwrites arg1Bytes with result of op
-		logicalXor(arg0Bytes, arg1Bytes)
-	case Jmp:
-		addr := uint32FromBytes(vm.popStack())
-		*pc = Register(addr)
-	case Jz:
-		addr, value := vm.popPeekStackUint32()
-		if value == 0 {
-			*vm.pc = addr
-		}
-	case Jnz:
-		addr, value := vm.popPeekStackUint32()
-		if value != 0 {
-			*vm.pc = addr
-		}
-	case Jle:
-		addr, value := vm.popPeekStackUint32()
-		if int32(value) <= 0 {
-			*vm.pc = addr
-		}
-	case Jl:
-		addr, value := vm.popPeekStackUint32()
-		if int32(value) < 0 {
-			*vm.pc = addr
-		}
-	case Jge:
-		addr, value := vm.popPeekStackUint32()
-		if int32(value) >= 0 {
-			*vm.pc = addr
-		}
-	case Jg:
-		addr, value := vm.popPeekStackUint32()
-		if int32(value) > 0 {
-			*vm.pc = addr
-		}
-	case Cmpu:
-		compare(vm, uint32FromBytes)
-	case Cmps:
-		compare(vm, int32FromBytes)
-	case Cmpf:
-		compare(vm, float32FromBytes)
-	case Writec:
-		character := rune(uint32FromBytes(vm.popStack()))
-		vm.stdout.WriteString(string(character))
-		vm.stdout.Flush()
-	case Readc:
-		character, _, err := vm.stdin.ReadRune()
-		if err != nil {
-			vm.errcode = errIO
+			regValue := uint32FromBytes(vm.popStack())
+			vm.registers[regIdx] = Register(regValue)
+		case Loadp8:
+			addrBytes := vm.peekStack(varchBytes)
+			addr := uint32FromBytes(addrBytes)
+			// overwrite addrBytes with memory value
+			uint32ToBytes(uint32(vm.stack[addr]), addrBytes)
+		case Loadp16:
+			addrBytes := vm.peekStack(varchBytes)
+			addr := uint32FromBytes(addrBytes)
+			// overwrite addrBytes with memory value
+			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.stack[addr:])), addrBytes)
+		case Loadp32:
+			addrBytes := vm.peekStack(varchBytes)
+			addr := uint32FromBytes(addrBytes)
+			// overwrite addrBytes with memory value
+			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.stack[addr:])), addrBytes)
+		case Storep8:
+			addrBytes, valueBytes := vm.popStackx2()
+			addr := uint32FromBytes(addrBytes)
+			vm.stack[addr] = valueBytes[0]
+		case Storep16:
+			addrBytes, valueBytes := vm.popStackx2()
+			addr := uint32FromBytes(addrBytes)
+
+			// unrolled loop
+			vm.stack[addr] = valueBytes[0]
+			vm.stack[addr+1] = valueBytes[1]
+		case Storep32:
+			addrBytes, valueBytes := vm.popStackx2()
+			addr := uint32FromBytes(addrBytes)
+
+			// unrolled loop
+			vm.stack[addr] = valueBytes[0]
+			vm.stack[addr+1] = valueBytes[1]
+			vm.stack[addr+2] = valueBytes[2]
+			vm.stack[addr+3] = valueBytes[3]
+		case Push:
+			bytes := uint32FromBytes(vm.popStack())
+			*vm.sp = *vm.sp + Register(bytes)
+		case Pop:
+			bytes := uint32FromBytes(vm.popStack())
+			*vm.sp = *vm.sp - Register(bytes)
+		case Addi:
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithAddi(arg0Bytes, arg1Bytes)
+		case Addf:
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithAddf(arg0Bytes, arg1Bytes)
+		case Subi:
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithSubi(arg0Bytes, arg1Bytes)
+		case Subf:
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithSubf(arg0Bytes, arg1Bytes)
+		case Muli:
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithMuli(arg0Bytes, arg1Bytes)
+		case Mulf:
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithMulf(arg0Bytes, arg1Bytes)
+		case Divi:
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithDivi(arg0Bytes, arg1Bytes)
+		case Divf:
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithDivf(arg0Bytes, arg1Bytes)
+		case Not:
+			arg := vm.peekStack(varchBytes)
+			// Invert all bits, store result in arg
+			uint32ToBytes(^uint32FromBytes(arg), arg)
+		case And:
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			logicalAnd(arg0Bytes, arg1Bytes)
+		case Or:
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			logicalOr(arg0Bytes, arg1Bytes)
+		case Xor:
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			logicalXor(arg0Bytes, arg1Bytes)
+		case Jmp:
+			addr := uint32FromBytes(vm.popStack())
+			*pc = Register(addr)
+		case Jz:
+			addr, value := vm.popPeekStackUint32()
+			if value == 0 {
+				*vm.pc = addr
+			}
+		case Jnz:
+			addr, value := vm.popPeekStackUint32()
+			if value != 0 {
+				*vm.pc = addr
+			}
+		case Jle:
+			addr, value := vm.popPeekStackUint32()
+			if int32(value) <= 0 {
+				*vm.pc = addr
+			}
+		case Jl:
+			addr, value := vm.popPeekStackUint32()
+			if int32(value) < 0 {
+				*vm.pc = addr
+			}
+		case Jge:
+			addr, value := vm.popPeekStackUint32()
+			if int32(value) >= 0 {
+				*vm.pc = addr
+			}
+		case Jg:
+			addr, value := vm.popPeekStackUint32()
+			if int32(value) > 0 {
+				*vm.pc = addr
+			}
+		case Cmpu:
+			compare(vm, uint32FromBytes)
+		case Cmps:
+			compare(vm, int32FromBytes)
+		case Cmpf:
+			compare(vm, float32FromBytes)
+		case Writec:
+			character := rune(uint32FromBytes(vm.popStack()))
+			vm.stdout.WriteString(string(character))
+			vm.stdout.Flush()
+		case Readc:
+			character, _, err := vm.stdin.ReadRune()
+			if err != nil {
+				vm.errcode = errIO
+				return
+			}
+			vm.pushStack(uint32(character))
+		case Exit:
+			// Sets the pc to be one after the last instruction
+			*pc = Register(len(vm.program))
+		default:
+			// Shouldn't get here since we preprocess+parse all source into
+			// valid instructions before executing
+			vm.errcode = errUnknownInstruction
 			return
 		}
-		vm.pushStack(uint32(character))
-	case Exit:
-		// Sets the pc to be one after the last instruction
-		*pc = Register(len(vm.program))
-	default:
-		// Shouldn't get here since we preprocess+parse all source into
-		// valid instructions before executing
-		vm.errcode = errUnknownInstruction
-		return
+
+		if singleStep {
+			return
+		}
 	}
 }
