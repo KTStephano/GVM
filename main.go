@@ -50,6 +50,9 @@ import (
 			or  (logical OR between stack[0] and stack[1])
 			xor (logical XOR between stack[0] and stack[1])
 
+		The jump instructions all pop the address off the stack (stack[0]), but the comparison versions
+		only read the value at stack[1] without popping it
+
 			jmp  (unconditional jump to address at stack[0])
 			jz   (jump to address at stack[0] if stack[1] is 0)
 			jnz  (jump to address at stack[0] if stack[1] is not 0)
@@ -178,16 +181,6 @@ type numeric32 interface {
 	int32 | uint32 | float32
 }
 
-// Any numeric value including float, capped at 32 bits
-type numeric interface {
-	int8 | uint8 | int16 | uint16 | numeric32
-}
-
-// Only unsigned integers
-type uinteger interface {
-	uint8 | uint16 | uint32
-}
-
 const (
 	NumRegisters int = 32
 	StackSize    int = 65536
@@ -197,8 +190,6 @@ const (
 
 var (
 	errProgramFinished    = errors.New("ran out of instructions")
-	errStackUnderflow     = errors.New("stack underflow error")
-	errStackOverflow      = errors.New("stack overflow error")
 	errSegmentationFault  = errors.New("segmentation fault")
 	errIllegalOperation   = errors.New("illegal operation at instruction")
 	errUnknownInstruction = errors.New("instruction not recognized")
@@ -314,26 +305,6 @@ func (i Instruction) String() string {
 	}
 }
 
-func uint32FromBytes(bytes []byte) uint32 {
-	return binary.LittleEndian.Uint32(bytes[:4])
-}
-
-func int32FromBytes(bytes []byte) int32 {
-	return int32(uint32FromBytes(bytes))
-}
-
-func float32FromBytes(bytes []byte) float32 {
-	return math.Float32frombits(uint32FromBytes(bytes[:4]))
-}
-
-func uint32ToBytes(u uint32, bytes []byte) {
-	binary.LittleEndian.PutUint32(bytes[:4], u)
-}
-
-func float32ToBytes(f float32, bytes []byte) {
-	uint32ToBytes(math.Float32bits(f), bytes)
-}
-
 func (vm *GVM) ProgramCounter() *Register {
 	return &vm.registers[0]
 }
@@ -373,47 +344,266 @@ func (vm *GVM) PrintProgram() {
 	}
 }
 
-func (vm *GVM) peekStack(offset uint32) []byte {
-	vm.errcode = errStackUnderflow
+func NewVirtualMachine(debug bool, files ...string) (*GVM, error) {
+	vm := &GVM{stdin: bufio.NewReader(os.Stdin)}
 
+	// If requested, set up the VM in debug mode
+	var debugSymMap map[int]string
+	if debug {
+		debugSymMap = make(map[int]string)
+		vm.debugOut = &strings.Builder{}
+		vm.debugSym = &DebugSymbols{source: debugSymMap}
+		vm.stdout = bufio.NewWriter(vm.debugOut)
+	} else {
+		vm.stdout = bufio.NewWriter(os.Stdout)
+	}
+
+	// Read each file
+	lines := make([]string, 0)
+	for _, filename := range files {
+		file, err := os.Open(filename)
+		if err != nil {
+			fmt.Println("Could not read", filename)
+			return nil, err
+		}
+
+		reader := bufio.NewReader(file)
+		for {
+			line, _, err := reader.ReadLine()
+			if err != nil {
+				break
+			}
+
+			lines = append(lines, string(line))
+		}
+	}
+
+	labels := make(map[string]string)
+	preprocessedLines := make([][2]string, 0)
+
+	// Allows us to easily find and replace commands from start to end of line
+	comments := regexp.MustCompile("//.*")
+
+	// First preprocess line to remove whitespace lines and convert labels
+	// into line numbers
+	for _, line := range lines {
+		var err error
+		preprocessedLines, err = preprocessLine(string(line), comments, labels, preprocessedLines, debugSymMap)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	vm.program = make([]Instruction, 0, len(preprocessedLines))
+
+	for _, line := range preprocessedLines {
+		// Replace all labels with their instruction address
+		for label, lineNum := range labels {
+			line[1] = strings.ReplaceAll(line[1], label, lineNum)
+		}
+
+		instrs, err := parseInputLine(line)
+		if err != nil {
+			return nil, err
+		}
+
+		vm.program = append(vm.program, instrs...)
+	}
+
+	return vm, nil
+}
+
+func (vm *GVM) ExecNextInstruction() {
+	pc := vm.ProgramCounter()
+	if *pc >= Register(len(vm.program)) {
+		vm.errcode = errProgramFinished
+		return
+	}
+
+	instr := vm.program[*pc]
+	*pc += 1
+
+	switch instr.code {
+	case Nop:
+	case Sp:
+		vm.pushStack(uint32(*vm.StackPointer()))
+	case Byte:
+		vm.pushStackByte(instr.arg)
+	case Const:
+		vm.pushStack(instr.arg)
+	case Load:
+		// read register index from stack
+		stackTop := vm.peekStack(VArchBytes)
+		regIdx := uint32FromBytes(stackTop)
+		// overwrite register index on stack with register value
+		uint32ToBytes(uint32(vm.registers[regIdx]), stackTop)
+	case Store:
+		regIdx := uint32FromBytes(vm.popStack())
+		if regIdx < 2 {
+			// not allowed to write to program counter or stack pointer
+			vm.errcode = errIllegalOperation
+			return
+		}
+
+		regValue := uint32FromBytes(vm.popStack())
+		vm.registers[regIdx] = Register(regValue)
+	case Loadp8:
+		loadpX(vm, 1)
+	case Loadp16:
+		loadpX(vm, 2)
+	case Loadp32:
+		loadpX(vm, 4)
+	case Storep8:
+		storepX(vm, 1)
+	case Storep16:
+		storepX(vm, 2)
+	case Storep32:
+		storepX(vm, 4)
+	case Push:
+		bytes := uint32FromBytes(vm.popStack())
+		sp := vm.StackPointer()
+		*sp = *sp + Register(bytes)
+	case Pop:
+		bytes := uint32FromBytes(vm.popStack())
+		sp := vm.StackPointer()
+		*sp = *sp - Register(bytes)
+	case Addi:
+		arithmeticLogical(vm, arithAddi)
+	case Addf:
+		arithmeticLogical(vm, arithAddf)
+	case Subi:
+		arithmeticLogical(vm, arithSubi)
+	case Subf:
+		arithmeticLogical(vm, arithSubf)
+	case Muli:
+		arithmeticLogical(vm, arithMuli)
+	case Mulf:
+		arithmeticLogical(vm, arithMulf)
+	case Divi:
+		arithmeticLogical(vm, arithDivi)
+	case Divf:
+		arithmeticLogical(vm, arithDivf)
+	case Not:
+		arg := vm.peekStack(VArchBytes)
+		// Invert all bits, store result in arg
+		uint32ToBytes(^uint32FromBytes(arg), arg)
+	case And:
+		arithmeticLogical(vm, logicalAnd)
+	case Or:
+		arithmeticLogical(vm, logicalOr)
+	case Xor:
+		arithmeticLogical(vm, logicalXor)
+	case Jmp:
+		addr := uint32FromBytes(vm.popStack())
+		*pc = Register(addr)
+	case Jz:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if value == 0 {
+			*pc = Register(addr)
+		}
+	case Jnz:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if value != 0 {
+			*pc = Register(addr)
+		}
+	case Jle:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if int32(value) <= 0 {
+			*pc = Register(addr)
+		}
+	case Jl:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if int32(value) < 0 {
+			*pc = Register(addr)
+		}
+	case Jge:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if int32(value) >= 0 {
+			*pc = Register(addr)
+		}
+	case Jg:
+		addr := uint32FromBytes(vm.popStack())
+		value := uint32FromBytes(vm.peekStack(VArchBytes))
+		if int32(value) > 0 {
+			*pc = Register(addr)
+		}
+	case Cmpu:
+		compare(vm, uint32FromBytes)
+	case Cmps:
+		compare(vm, int32FromBytes)
+	case Cmpf:
+		compare(vm, float32FromBytes)
+	case Writec:
+		character := rune(uint32FromBytes(vm.popStack()))
+		vm.stdout.WriteString(string(character))
+		vm.stdout.Flush()
+	case Readc:
+		character, _, err := vm.stdin.ReadRune()
+		if err != nil {
+			vm.errcode = errIO
+			return
+		}
+		vm.pushStack(uint32(character))
+	case Exit:
+		// Sets the pc to be one after the last instruction
+		*pc = Register(len(vm.program))
+	default:
+		// Shouldn't get here since we preprocess+parse all source into
+		// valid instructions before executing
+		vm.errcode = errUnknownInstruction
+		return
+	}
+}
+
+func uint32FromBytes(bytes []byte) uint32 {
+	return binary.LittleEndian.Uint32(bytes)
+}
+
+func int32FromBytes(bytes []byte) int32 {
+	return int32(uint32FromBytes(bytes))
+}
+
+func float32FromBytes(bytes []byte) float32 {
+	return math.Float32frombits(uint32FromBytes(bytes))
+}
+
+func uint32ToBytes(u uint32, bytes []byte) {
+	binary.LittleEndian.PutUint32(bytes, u)
+}
+
+func float32ToBytes(f float32, bytes []byte) {
+	uint32ToBytes(math.Float32bits(f), bytes)
+}
+
+func (vm *GVM) peekStack(offset uint32) []byte {
 	sp := vm.StackPointer()
-	return vm.stack[*sp-Register(offset) : *sp]
+	return vm.stack[*sp-Register(offset):]
 }
 
 func (vm *GVM) popStack() []byte {
-	vm.errcode = errStackUnderflow
-
 	sp := vm.StackPointer()
-	start, end := *sp-Register(VArchBytes), *sp
+	start := *sp - Register(VArchBytes)
 	*sp = start
-	return vm.stack[start:end]
+	return vm.stack[start:]
 }
 
 func (vm *GVM) pushStackByte(value uint32) {
-	vm.errcode = errStackOverflow
-
 	sp := vm.StackPointer()
-	start, end := *sp, *sp+Register(1)
-	*sp = end
+	start := *sp
+	*sp++
 	vm.stack[start] = byte(value)
 }
 
-func (vm *GVM) pushStack(value any) {
-	vm.errcode = errStackOverflow
-
+func (vm *GVM) pushStack(value uint32) {
 	sp := vm.StackPointer()
-	start, end := *sp, *sp+Register(VArchBytes)
-	*sp = end
-	switch v := value.(type) {
-	case uint32:
-		uint32ToBytes(v, vm.stack[start:end])
-	case float32:
-		float32ToBytes(v, vm.stack[start:end])
-	default:
-		// Shouldn't get here since this is called internally and indicates
-		// a VM bug if it triggers
-		panic("Unknown type: should be unsigned 32 bit or float 32 bit")
-	}
+	start := *sp
+	*sp += Register(VArchBytes)
+	uint32ToBytes(value, vm.stack[start:])
 }
 
 func compare[T numeric32](vm *GVM, convertFunc func([]byte) T) {
@@ -498,259 +688,31 @@ func arithmeticLogical(vm *GVM, op func([]byte, []byte)) {
 	op(arg0Bytes, arg1Bytes)
 }
 
-func loadpX[T numeric](vm *GVM) {
+func loadpX(vm *GVM, sizeof uint32) {
 	addrBytes := vm.peekStack(VArchBytes)
 	addr := uint32FromBytes(addrBytes)
 
-	vm.errcode = errSegmentationFault
-
-	var v T
-	sizeof := unsafe.Sizeof(v)
 	result := uint32(0)
-
 	switch sizeof {
 	case 1:
 		result = uint32(vm.stack[addr])
 	case 2:
-		result = uint32(binary.LittleEndian.Uint16(vm.stack[addr : addr+2]))
+		result = uint32(binary.LittleEndian.Uint16(vm.stack[addr:]))
 	case 4:
-		result = uint32(binary.LittleEndian.Uint32(vm.stack[addr : addr+4]))
+		result = uint32(binary.LittleEndian.Uint32(vm.stack[addr:]))
 	}
 
 	// overwrite addrBytes with memory value
 	uint32ToBytes(result, addrBytes)
 }
 
-func storepX[T uinteger](vm *GVM) {
+func storepX(vm *GVM, sizeof uint32) {
 	addr := uint32FromBytes(vm.popStack())
 	valueBytes := vm.popStack()
 
-	vm.errcode = errSegmentationFault
-
-	var v T
-	sizeof := uint32(unsafe.Sizeof(v))
 	for i := uint32(0); i < sizeof; i++ {
 		vm.stack[addr+i] = valueBytes[i]
 	}
-}
-
-func (vm *GVM) ExecNextInstruction() {
-	pc := vm.ProgramCounter()
-	if *pc >= Register(len(vm.program)) {
-		vm.errcode = errProgramFinished
-		return
-	}
-
-	instr := vm.program[*pc]
-	*pc += 1
-
-	switch instr.code {
-	case Nop:
-	case Sp:
-		vm.pushStack(uint32(*vm.StackPointer()))
-	case Byte:
-		vm.pushStackByte(instr.arg)
-	case Const:
-		vm.pushStack(instr.arg)
-	case Load:
-		// read register index from stack
-		stackTop := vm.peekStack(VArchBytes)
-		regIdx := uint32FromBytes(stackTop)
-		// overwrite register index on stack with register value
-		uint32ToBytes(uint32(vm.registers[regIdx]), stackTop)
-	case Store:
-		regIdx := uint32FromBytes(vm.popStack())
-		if regIdx < 2 {
-			// not allowed to write to program counter or stack pointer
-			vm.errcode = errIllegalOperation
-			return
-		}
-
-		regValue := uint32FromBytes(vm.popStack())
-		vm.registers[regIdx] = Register(regValue)
-	case Loadp8:
-		loadpX[uint8](vm)
-	case Loadp16:
-		loadpX[uint16](vm)
-	case Loadp32:
-		loadpX[uint32](vm)
-	case Storep8:
-		storepX[uint8](vm)
-	case Storep16:
-		storepX[uint16](vm)
-	case Storep32:
-		storepX[uint32](vm)
-	case Push:
-		bytes := uint32FromBytes(vm.popStack())
-		sp := vm.StackPointer()
-		*sp = *sp + Register(bytes)
-	case Pop:
-		bytes := uint32FromBytes(vm.popStack())
-		sp := vm.StackPointer()
-		*sp = *sp - Register(bytes)
-	case Addi:
-		arithmeticLogical(vm, arithAddi)
-	case Addf:
-		arithmeticLogical(vm, arithAddf)
-	case Subi:
-		arithmeticLogical(vm, arithSubi)
-	case Subf:
-		arithmeticLogical(vm, arithSubf)
-	case Muli:
-		arithmeticLogical(vm, arithMuli)
-	case Mulf:
-		arithmeticLogical(vm, arithMulf)
-	case Divi:
-		arithmeticLogical(vm, arithDivi)
-	case Divf:
-		arithmeticLogical(vm, arithDivf)
-	case Not:
-		arg := vm.peekStack(VArchBytes)
-		// Invert all bits, store result in arg
-		uint32ToBytes(^uint32FromBytes(arg), arg)
-	case And:
-		arithmeticLogical(vm, logicalAnd)
-	case Or:
-		arithmeticLogical(vm, logicalOr)
-	case Xor:
-		arithmeticLogical(vm, logicalXor)
-	case Jmp:
-		addr := uint32FromBytes(vm.popStack())
-		*pc = Register(addr)
-	case Jz:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.popStack())
-		if value == 0 {
-			*pc = Register(addr)
-		}
-	case Jnz:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.popStack())
-		if value != 0 {
-			*pc = Register(addr)
-		}
-	case Jle:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.popStack())
-		if int32(value) <= 0 {
-			*pc = Register(addr)
-		}
-	case Jl:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.popStack())
-		if int32(value) < 0 {
-			*pc = Register(addr)
-		}
-	case Jge:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.popStack())
-		if int32(value) >= 0 {
-			*pc = Register(addr)
-		}
-	case Jg:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.popStack())
-		if int32(value) > 0 {
-			*pc = Register(addr)
-		}
-	case Cmpu:
-		compare(vm, uint32FromBytes)
-	case Cmps:
-		compare(vm, int32FromBytes)
-	case Cmpf:
-		compare(vm, float32FromBytes)
-	case Writec:
-		character := rune(uint32FromBytes(vm.popStack()))
-		vm.stdout.WriteString(string(character))
-		vm.stdout.Flush()
-	case Readc:
-		character, _, err := vm.stdin.ReadRune()
-		if err != nil {
-			vm.errcode = errIO
-			return
-		}
-		vm.pushStack(uint32(character))
-	case Exit:
-		// Sets the pc to be one after the last instruction
-		*pc = Register(len(vm.program))
-	default:
-		// Shouldn't get here since we preprocess+parse all source into
-		// valid instructions before executing
-		vm.errcode = errUnknownInstruction
-		return
-	}
-
-	// Unset flag - no errors
-	vm.errcode = nil
-}
-
-func NewVirtualMachine(debug bool, files ...string) (*GVM, error) {
-	vm := &GVM{stdin: bufio.NewReader(os.Stdin)}
-
-	// If requested, set up the VM in debug mode
-	var debugSymMap map[int]string
-	if debug {
-		debugSymMap = make(map[int]string)
-		vm.debugOut = &strings.Builder{}
-		vm.debugSym = &DebugSymbols{source: debugSymMap}
-		vm.stdout = bufio.NewWriter(vm.debugOut)
-	} else {
-		vm.stdout = bufio.NewWriter(os.Stdout)
-	}
-
-	// Read each file
-	lines := make([]string, 0)
-	for _, filename := range files {
-		file, err := os.Open(filename)
-		if err != nil {
-			fmt.Println("Could not read", filename)
-			return nil, err
-		}
-
-		reader := bufio.NewReader(file)
-		for {
-			line, _, err := reader.ReadLine()
-			if err != nil {
-				break
-			}
-
-			lines = append(lines, string(line))
-		}
-	}
-
-	labels := make(map[string]string)
-	preprocessedLines := make([][2]string, 0)
-
-	// Allows us to easily find and replace commands from start to end of line
-	comments := regexp.MustCompile("//.*")
-
-	// First preprocess line to remove whitespace lines and convert labels
-	// into line numbers
-	for _, line := range lines {
-		var err error
-		preprocessedLines, err = preprocessLine(string(line), comments, labels, preprocessedLines, debugSymMap)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	vm.program = make([]Instruction, 0, len(preprocessedLines))
-
-	for _, line := range preprocessedLines {
-		// Replace all labels with their instruction address
-		for label, lineNum := range labels {
-			line[1] = strings.ReplaceAll(line[1], label, lineNum)
-		}
-
-		instrs, err := parseInputLine(line)
-		if err != nil {
-			return nil, err
-		}
-
-		vm.program = append(vm.program, instrs...)
-	}
-
-	return vm, nil
 }
 
 // Checks for things like \\n and replaces it with \n
@@ -978,7 +940,11 @@ func main() {
 	// Allows us to handle critical errors that came up during execuion
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Printf("%+v\n", vm.errcode)
+			if vm.errcode != nil {
+				fmt.Println(vm.errcode)
+			} else {
+				fmt.Println(errSegmentationFault)
+			}
 		}
 	}()
 
