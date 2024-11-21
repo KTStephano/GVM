@@ -50,7 +50,7 @@ const (
 
 // Each register is just a bit pattern with no concept of
 // type (signed, unsigned int or float)
-type Register uint32
+type Register = uint32
 
 // Laid out this way so that sizeof(Instruction) == 8
 type Instruction struct {

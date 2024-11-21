@@ -124,8 +124,8 @@ const (
 	numRegisters int = 32
 	stackSize    int = 65536
 	// 4 bytes since our virtual architecture is 32-bit
-	varchBytes   = 4
-	varchBytesx2 = 2 * varchBytes
+	varchBytes   Register = 4
+	varchBytesx2 Register = 2 * varchBytes
 )
 
 var (
@@ -271,31 +271,51 @@ func float32ToBytes(f float32, bytes []byte) {
 	uint32ToBytes(math.Float32bits(f), bytes)
 }
 
-func (vm *VM) peekStack(offset uint32) []byte {
-	return vm.stack[*vm.sp-Register(offset):]
+func (vm *VM) peekStack(offset Register) []byte {
+	return vm.stack[*vm.sp-offset:]
 }
 
 func (vm *VM) popStack() []byte {
-	start := *vm.sp - Register(varchBytes)
+	start := *vm.sp - varchBytes
 	*vm.sp = start
 	return vm.stack[start:]
 }
 
-func (vm *VM) pushStackByte(value uint32) {
+func (vm *VM) popStackx2() ([]byte, []byte) {
+	*vm.sp -= varchBytesx2
+	bytes := vm.stack[*vm.sp:]
+	return bytes[4:], bytes
+}
+
+// Pops the first element, peeks the second element
+func (vm *VM) popPeekStack() ([]byte, []byte) {
+	*vm.sp -= varchBytes
+	bytes := vm.stack[*vm.sp-varchBytes:]
+	return bytes[4:], bytes
+}
+
+// Pops the first element, peeks the second element
+// Converts both to uint32
+func (vm *VM) popPeekStackUint32() (uint32, uint32) {
+	*vm.sp -= varchBytes
+	bytes := vm.stack[*vm.sp-varchBytes:]
+	return uint32FromBytes(bytes[4:]), uint32FromBytes(bytes)
+}
+
+func (vm *VM) pushStackByte(value Register) {
 	start := *vm.sp
 	*vm.sp++
 	vm.stack[start] = byte(value)
 }
 
-func (vm *VM) pushStack(value uint32) {
+func (vm *VM) pushStack(value Register) {
 	start := *vm.sp
-	*vm.sp += Register(varchBytes)
+	*vm.sp += varchBytes
 	uint32ToBytes(value, vm.stack[start:])
 }
 
 func compare[T numeric32](vm *VM, convertFunc func([]byte) T) {
-	arg0Bytes := vm.popStack()
-	arg1Bytes := vm.peekStack(varchBytes)
+	arg0Bytes, arg1Bytes := vm.popPeekStack()
 
 	a0T := convertFunc(arg0Bytes)
 	a1T := convertFunc(arg1Bytes)
@@ -368,8 +388,7 @@ func logicalXor(x, y []byte) {
 }
 
 func arithmeticLogical(vm *VM, op func([]byte, []byte)) {
-	arg0Bytes := vm.popStack()
-	arg1Bytes := vm.peekStack(varchBytes)
+	arg0Bytes, arg1Bytes := vm.popPeekStack()
 
 	// Overwrites arg1Bytes with result of op
 	op(arg0Bytes, arg1Bytes)
@@ -394,14 +413,17 @@ func loadpX(vm *VM, sizeof uint32) {
 }
 
 func storepX(vm *VM, sizeof uint32) {
-	addr := uint32FromBytes(vm.popStack())
-	valueBytes := vm.popStack()
+	addrBytes, valueBytes := vm.popStackx2()
+	addr := uint32FromBytes(addrBytes)
 
 	for i := uint32(0); i < sizeof; i++ {
 		vm.stack[addr+i] = valueBytes[i]
 	}
 }
 
+// This is considered a tight loop. It's ok to move certain things to functions
+// if the functions are very simple (meaning Go's inlining rules take over), but
+// otherwise it's best to try and embed the logic directly into the switch statement.
 func (vm *VM) execNextInstruction() {
 	pc := vm.pc
 	if *pc >= Register(len(vm.program)) {
@@ -419,9 +441,9 @@ func (vm *VM) execNextInstruction() {
 	case Const:
 		vm.pushStack(instr.arg)
 	case Load:
-		vm.pushStack(uint32(vm.registers[instr.arg]))
+		vm.pushStack(vm.registers[instr.arg])
 	case Store:
-		regIdx := uint32(instr.arg)
+		regIdx := instr.arg
 		if regIdx < 2 {
 			// not allowed to write to program counter or stack pointer
 			vm.errcode = errIllegalOperation
@@ -449,69 +471,85 @@ func (vm *VM) execNextInstruction() {
 		bytes := uint32FromBytes(vm.popStack())
 		*vm.sp = *vm.sp - Register(bytes)
 	case Addi:
-		arithmeticLogical(vm, arithAddi)
+		arg0Bytes, arg1Bytes := vm.popPeekStack()
+		// Overwrites arg1Bytes with result of op
+		arithAddi(arg0Bytes, arg1Bytes)
 	case Addf:
-		arithmeticLogical(vm, arithAddf)
+		arg0Bytes, arg1Bytes := vm.popPeekStack()
+		// Overwrites arg1Bytes with result of op
+		arithAddf(arg0Bytes, arg1Bytes)
 	case Subi:
-		arithmeticLogical(vm, arithSubi)
+		arg0Bytes, arg1Bytes := vm.popPeekStack()
+		// Overwrites arg1Bytes with result of op
+		arithSubi(arg0Bytes, arg1Bytes)
 	case Subf:
-		arithmeticLogical(vm, arithSubf)
+		arg0Bytes, arg1Bytes := vm.popPeekStack()
+		// Overwrites arg1Bytes with result of op
+		arithSubf(arg0Bytes, arg1Bytes)
 	case Muli:
-		arithmeticLogical(vm, arithMuli)
+		arg0Bytes, arg1Bytes := vm.popPeekStack()
+		// Overwrites arg1Bytes with result of op
+		arithMuli(arg0Bytes, arg1Bytes)
 	case Mulf:
-		arithmeticLogical(vm, arithMulf)
+		arg0Bytes, arg1Bytes := vm.popPeekStack()
+		// Overwrites arg1Bytes with result of op
+		arithMulf(arg0Bytes, arg1Bytes)
 	case Divi:
-		arithmeticLogical(vm, arithDivi)
+		arg0Bytes, arg1Bytes := vm.popPeekStack()
+		// Overwrites arg1Bytes with result of op
+		arithDivi(arg0Bytes, arg1Bytes)
 	case Divf:
-		arithmeticLogical(vm, arithDivf)
+		arg0Bytes, arg1Bytes := vm.popPeekStack()
+		// Overwrites arg1Bytes with result of op
+		arithDivf(arg0Bytes, arg1Bytes)
 	case Not:
 		arg := vm.peekStack(varchBytes)
 		// Invert all bits, store result in arg
 		uint32ToBytes(^uint32FromBytes(arg), arg)
 	case And:
-		arithmeticLogical(vm, logicalAnd)
+		arg0Bytes, arg1Bytes := vm.popPeekStack()
+		// Overwrites arg1Bytes with result of op
+		logicalAnd(arg0Bytes, arg1Bytes)
 	case Or:
-		arithmeticLogical(vm, logicalOr)
+		arg0Bytes, arg1Bytes := vm.popPeekStack()
+		// Overwrites arg1Bytes with result of op
+		logicalOr(arg0Bytes, arg1Bytes)
 	case Xor:
-		arithmeticLogical(vm, logicalXor)
+		arg0Bytes, arg1Bytes := vm.popPeekStack()
+		// Overwrites arg1Bytes with result of op
+		logicalXor(arg0Bytes, arg1Bytes)
 	case Jmp:
 		addr := uint32FromBytes(vm.popStack())
 		*pc = Register(addr)
 	case Jz:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.peekStack(varchBytes))
+		addr, value := vm.popPeekStackUint32()
 		if value == 0 {
-			*pc = Register(addr)
+			*vm.pc = addr
 		}
 	case Jnz:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.peekStack(varchBytes))
+		addr, value := vm.popPeekStackUint32()
 		if value != 0 {
-			*pc = Register(addr)
+			*vm.pc = addr
 		}
 	case Jle:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.peekStack(varchBytes))
+		addr, value := vm.popPeekStackUint32()
 		if int32(value) <= 0 {
-			*pc = Register(addr)
+			*vm.pc = addr
 		}
 	case Jl:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.peekStack(varchBytes))
+		addr, value := vm.popPeekStackUint32()
 		if int32(value) < 0 {
-			*pc = Register(addr)
+			*vm.pc = addr
 		}
 	case Jge:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.peekStack(varchBytes))
+		addr, value := vm.popPeekStackUint32()
 		if int32(value) >= 0 {
-			*pc = Register(addr)
+			*vm.pc = addr
 		}
 	case Jg:
-		addr := uint32FromBytes(vm.popStack())
-		value := uint32FromBytes(vm.peekStack(varchBytes))
+		addr, value := vm.popPeekStackUint32()
 		if int32(value) > 0 {
-			*pc = Register(addr)
+			*vm.pc = addr
 		}
 	case Cmpu:
 		compare(vm, uint32FromBytes)

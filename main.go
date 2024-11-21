@@ -11,6 +11,13 @@ import (
 var debugVM = flag.Bool("debug", false, "Enter into debug mode")
 
 func main() {
+	// f, err := os.Create("pprof.cpu")
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+	// pprof.StartCPUProfile(f)
+	// defer pprof.StopCPUProfile()
+
 	flag.Parse()
 	args := os.Args[len(os.Args)-flag.NArg():]
 
