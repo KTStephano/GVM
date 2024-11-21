@@ -108,6 +108,10 @@ func parseInputLine(line [2]string) ([]Instruction, error) {
 
 	strArg := line[1]
 	if strArg != "" {
+		if !code.RequiresOpArg() {
+			return nil, fmt.Errorf("%s does not require an op argument", code.String())
+		}
+
 		// Character - replace with number
 		if strings.HasPrefix(strArg, "'") {
 			runes := []rune(strArg)
@@ -147,7 +151,7 @@ func parseInputLine(line [2]string) ([]Instruction, error) {
 		}
 	} else {
 		if code.RequiresOpArg() {
-			return nil, fmt.Errorf("%s requires an argument", code.String())
+			return nil, fmt.Errorf("%s requires an op argument", code.String())
 		}
 
 		return []Instruction{Instruction(code)}, nil
