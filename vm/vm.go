@@ -46,9 +46,6 @@ import (
 			or  (logical OR between stack[0] and stack[1])
 			xor (logical XOR between stack[0] and stack[1])
 
-		The jump instructions all pop the address off the stack (stack[0]), but the comparison versions
-		only read the value at stack[1] without popping it
-
 			jmp  (unconditional jump to address at stack[0])
 			jz   (jump to address at stack[0] if stack[1] is 0)
 			jnz  (jump to address at stack[0] if stack[1] is not 0)
@@ -287,6 +284,12 @@ func (vm *VM) popStackx2() ([]byte, []byte) {
 	return bytes[4:], bytes
 }
 
+func (vm *VM) popStackx2Uint32() (uint32, uint32) {
+	*vm.sp -= varchBytesx2
+	bytes := vm.stack[*vm.sp:]
+	return uint32FromBytes(bytes[4:]), uint32FromBytes(bytes)
+}
+
 // Pops the first element, peeks the second element
 func (vm *VM) popPeekStack() ([]byte, []byte) {
 	*vm.sp -= varchBytes
@@ -507,32 +510,32 @@ func (vm *VM) execInstructions(singleStep bool) {
 			addr := uint32FromBytes(vm.popStack())
 			*pc = Register(addr)
 		case Jz:
-			addr, value := vm.popPeekStackUint32()
+			addr, value := vm.popStackx2Uint32()
 			if value == 0 {
 				*vm.pc = addr
 			}
 		case Jnz:
-			addr, value := vm.popPeekStackUint32()
+			addr, value := vm.popStackx2Uint32()
 			if value != 0 {
 				*vm.pc = addr
 			}
 		case Jle:
-			addr, value := vm.popPeekStackUint32()
+			addr, value := vm.popStackx2Uint32()
 			if int32(value) <= 0 {
 				*vm.pc = addr
 			}
 		case Jl:
-			addr, value := vm.popPeekStackUint32()
+			addr, value := vm.popStackx2Uint32()
 			if int32(value) < 0 {
 				*vm.pc = addr
 			}
 		case Jge:
-			addr, value := vm.popPeekStackUint32()
+			addr, value := vm.popStackx2Uint32()
 			if int32(value) >= 0 {
 				*vm.pc = addr
 			}
 		case Jg:
-			addr, value := vm.popPeekStackUint32()
+			addr, value := vm.popStackx2Uint32()
 			if int32(value) > 0 {
 				*vm.pc = addr
 			}

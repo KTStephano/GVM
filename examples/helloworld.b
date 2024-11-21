@@ -29,17 +29,17 @@ loop:
     loadp8          // dereference 1 byte (8 bits) value at address from stack[0], widens to 32-bits
     const writechar
     jnz
-    const 4
-    pop             // pop 4 bytes from stack to clear the character
     load 1
     const -4
     addi            // addi sp -4 : this will hold the return address
     loadp32         // dereference 4 bytes (32 bits) value from address at stack[0]
     jmp             // jumps to return address at stack[0]
 writechar:
+    load 2
+    loadp8          // dereference 1 byte (8 bits) value at address from stack[0], widens to 32-bits
     writec
     const -1
     load 2
-    addi            // addi register[2] -1
+    addi            // addi register[2] -1, moves string address
     const loop
     jmp
