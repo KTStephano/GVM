@@ -314,22 +314,14 @@ func (vm *VM) pushStack(value Register) {
 	uint32ToBytes(value, vm.stack[start:])
 }
 
-func compare[T numeric32](vm *VM, convertFunc func([]byte) T) {
-	arg0Bytes, arg1Bytes := vm.popPeekStack()
-
-	a0T := convertFunc(arg0Bytes)
-	a1T := convertFunc(arg1Bytes)
-	var result uint32
-	if a0T < a1T {
-		result = math.MaxUint32 // -1 when converted to int32
-	} else if a0T == a1T {
-		result = 0
+func compare[T numeric32](x, y T) uint32 {
+	if x < y {
+		return math.MaxUint32 // -1 when converted to int32
+	} else if x == y {
+		return 0
 	} else {
-		result = 1
+		return 1
 	}
-
-	// Overwrite arg1 bytes with result of compare
-	uint32ToBytes(result, arg1Bytes)
 }
 
 func arithAddi(x, y []byte) {
@@ -390,6 +382,9 @@ func logicalXor(x, y []byte) {
 // This is considered a tight loop. It's ok to move certain things to functions
 // if the functions are very simple (meaning Go's inlining rules take over), but
 // otherwise it's best to try and embed the logic directly into the switch statement.
+//
+// singleStep can be set when in debug mode so that this function runs 1 instruction
+// and then returns to caller.
 func (vm *VM) execInstructions(singleStep bool) {
 	for {
 		pc := vm.pc
@@ -542,11 +537,17 @@ func (vm *VM) execInstructions(singleStep bool) {
 				*vm.pc = addr
 			}
 		case Cmpu:
-			compare(vm, uint32FromBytes)
+			x, y := vm.popPeekStack()
+			// Overwrite y bytes with result of compare
+			uint32ToBytes(compare(uint32FromBytes(x), uint32FromBytes(y)), y)
 		case Cmps:
-			compare(vm, int32FromBytes)
+			x, y := vm.popPeekStack()
+			// Overwrite y bytes with result of compare
+			uint32ToBytes(compare(int32FromBytes(x), int32FromBytes(y)), y)
 		case Cmpf:
-			compare(vm, float32FromBytes)
+			x, y := vm.popPeekStack()
+			// Overwrite y bytes with result of compare
+			uint32ToBytes(compare(float32FromBytes(x), float32FromBytes(y)), y)
 		case Writec:
 			character := rune(uint32FromBytes(vm.popStack()))
 			vm.stdout.WriteString(string(character))

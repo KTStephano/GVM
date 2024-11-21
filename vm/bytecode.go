@@ -2,7 +2,6 @@ package gvm
 
 import (
 	"fmt"
-	"unsafe"
 )
 
 type Bytecode byte
@@ -162,10 +161,13 @@ func (i Instruction) String() string {
 
 // This is called when package is first loaded (before main)
 func init() {
-	var instr Instruction
-	if unsafe.Sizeof(instr) != 8 {
-		panic("Instruction struct size not equal to 8")
-	}
+	// Some kind of check like this will probably be needed if we eventually decide
+	// to serialize instructions to file
+	//
+	// var instr Instruction
+	// if unsafe.Sizeof(instr) != 8 {
+	// 	panic("Instruction struct size not equal to 8")
+	// }
 
 	// Build instruction -> string map using the existing string -> instruction map
 	instrToStrMap = make(map[Bytecode]string, len(strToInstrMap))
