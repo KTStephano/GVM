@@ -17,7 +17,7 @@ func getDefaultRecoverFuncForVM(vm *VM) func() {
 				err = vm.errcode
 			}
 
-			fmt.Printf("%s%s\n", err, vm.formatInstructionStr(" at instruction:"))
+			fmt.Printf("%s%s\n", err, formatInstructionStr(vm, *vm.pc, " at instruction:"))
 		}
 	}
 }

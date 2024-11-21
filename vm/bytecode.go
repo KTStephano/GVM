@@ -1,9 +1,5 @@
 package gvm
 
-import (
-	"fmt"
-)
-
 type Bytecode byte
 
 const (
@@ -49,19 +45,14 @@ const (
 
 // Each register is just a bit pattern with no concept of
 // type (signed, unsigned int or float)
+//
+// = uint32 so that Register is a type alias for uint32 - no casting needed
 type Register = uint32
 
-// Laid out this way so that sizeof(Instruction) == 8
-type Instruction struct {
-	code Bytecode
-
-	// additional data we can use for state
-	// 		const: extra[0] tells const how many bytes to use to represent the constant
-	extra [3]byte
-
-	// argument to the bytecode itself
-	arg uint32
-}
+// No = uint32 since instruction is its own explicit type - casting required
+// If an instruction requires arguments, they can be laid out as additional
+// instruction entries next to it in memory
+type Instruction uint32
 
 var (
 	// Maps from string -> instruction
@@ -136,27 +127,6 @@ func (b Bytecode) String() string {
 // with it, such as const X
 func (b Bytecode) RequiresOpArg() bool {
 	return b == Const || b == Byte || b == Load || b == Store
-}
-
-func NewInstruction(code Bytecode, arg uint32, extra ...byte) Instruction {
-	instr := Instruction{code: code, arg: arg}
-	size := min(len(extra), len(instr.extra))
-	for i := 0; i < size; i++ {
-		instr.extra[i] = extra[i]
-	}
-	return instr
-}
-
-func (i Instruction) String() string {
-	if !i.code.RequiresOpArg() {
-		return i.code.String()
-	} else {
-		intArg := int32(i.arg)
-		if intArg < 0 {
-			return fmt.Sprintf("%s %d (%d)", i.code.String(), intArg, i.arg)
-		}
-		return fmt.Sprintf("%s %d", i.code.String(), i.arg)
-	}
 }
 
 // This is called when package is first loaded (before main)

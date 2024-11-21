@@ -25,22 +25,24 @@ func revertEscapeSeqReplacements(line string) string {
 	return line
 }
 
-func preprocessLine(line string, comments *regexp.Regexp, labels map[string]string, lines [][2]string, debugSym map[int]string) ([][2]string, error) {
+// Line count represents the total number of instructions. If an instruction has arguments, this causes
+// len(lines) to fall out of sync with the instruction line count.
+func preprocessLine(line string, comments *regexp.Regexp, labels map[string]string, lines [][2]string, lineCount int, debugSym map[int]string) ([][2]string, int, error) {
 	line = comments.ReplaceAllString(line, "")
 	line = strings.TrimSpace(line)
 
 	// Check if the line was pure whitespace
 	if line == "" {
-		return lines, nil
+		return lines, lineCount, nil
 		// Check if the line is a label
 	} else if strings.HasSuffix(line, ":") {
 		// Get rid of the : in the label
 		label := strings.ReplaceAll(line, ":", "")
-		labels[label] = fmt.Sprintf("%d", len(lines))
+		labels[label] = fmt.Sprintf("%d", lineCount)
 		if debugSym != nil {
-			debugSym[len(lines)] = label
+			debugSym[lineCount] = label
 		}
-		return append(lines, [2]string{"nop", ""}), nil
+		return append(lines, [2]string{"nop", ""}), lineCount + 1, nil
 	} else {
 		split := strings.Split(line, " ")
 		code := split[0]
@@ -53,7 +55,7 @@ func preprocessLine(line string, comments *regexp.Regexp, labels map[string]stri
 			if strings.HasPrefix(args, "'") || strings.HasPrefix(args, "\"") {
 				// Make sure the double or single quote also includes a terminating quote
 				if !strings.HasSuffix(args, "'") && !strings.HasSuffix(args, "\"") {
-					return nil, errors.New("unterminated character or string")
+					return nil, 0, errors.New("unterminated character or string")
 				}
 
 				args = insertEscapeSeqReplacements(args)
@@ -65,6 +67,7 @@ func preprocessLine(line string, comments *regexp.Regexp, labels map[string]stri
 		//
 		// We need to do the expansion in the preprocess stage or the labels
 		// will end up pointing to the wrong instructions
+		lineCountOffset := 0
 		if code == Const.String() && strings.HasPrefix(args, "\"") && strings.HasSuffix(args, "\"") {
 			bytes := []byte(args)
 			// Slice bytes to get rid of start and end quotes
@@ -75,18 +78,25 @@ func preprocessLine(line string, comments *regexp.Regexp, labels map[string]stri
 			for i := len(bytes) - 1; i >= 0; i-- {
 				if debugSym != nil {
 					// Since it's a debug symbol, add back the escaped characters
-					debugSym[len(lines)] = revertEscapeSeqReplacements(fmt.Sprintf("%s '%c'", Byte.String(), bytes[i]))
+					debugSym[lineCount+lineCountOffset] = revertEscapeSeqReplacements(fmt.Sprintf("%s '%c'", Byte.String(), bytes[i]))
 				}
+				lineCountOffset += 2
 				lines = append(lines, [2]string{Byte.String(), fmt.Sprintf("%d", bytes[i])})
 			}
 		} else {
-			if debugSym != nil {
-				debugSym[len(lines)] = line
+			lineCountOffset = 1
+			if args != "" {
+				lineCountOffset++
 			}
+
+			if debugSym != nil {
+				debugSym[lineCount] = line
+			}
+
 			lines = append(lines, [2]string{code, args})
 		}
 
-		return lines, nil
+		return lines, lineCount + lineCountOffset, nil
 	}
 }
 
@@ -106,7 +116,7 @@ func parseInputLine(line [2]string) ([]Instruction, error) {
 				return nil, errors.New("character is too large to fit into 32 bits")
 			}
 
-			return []Instruction{NewInstruction(code, uint32(runes[1]))}, nil
+			return []Instruction{Instruction(code), Instruction(runes[1])}, nil
 		} else {
 			// Likely a regular number or float
 			if strings.Contains(strArg, ".") {
@@ -115,7 +125,7 @@ func parseInputLine(line [2]string) ([]Instruction, error) {
 					return nil, err
 				}
 
-				return []Instruction{NewInstruction(code, math.Float32bits(float32(arg)))}, nil
+				return []Instruction{Instruction(code), Instruction(math.Float32bits(float32(arg)))}, nil
 			} else {
 				var arg int64
 				var err error
@@ -132,7 +142,7 @@ func parseInputLine(line [2]string) ([]Instruction, error) {
 					return nil, err
 				}
 
-				return []Instruction{NewInstruction(code, uint32(arg))}, nil
+				return []Instruction{Instruction(code), Instruction(arg)}, nil
 			}
 		}
 	} else {
@@ -140,6 +150,6 @@ func parseInputLine(line [2]string) ([]Instruction, error) {
 			return nil, fmt.Errorf("%s requires an argument", code.String())
 		}
 
-		return []Instruction{NewInstruction(code, 0)}, nil
+		return []Instruction{Instruction(code)}, nil
 	}
 }

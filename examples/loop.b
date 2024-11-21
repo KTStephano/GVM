@@ -1,5 +1,6 @@
     const 70000000
     store 2
+
 loop:
     load 2
     const -1
@@ -8,4 +9,3 @@ loop:
     load 2
     const loop
     jnz
-    exit

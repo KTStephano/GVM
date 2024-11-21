@@ -31,7 +31,9 @@ import (
 			load  (loads value of register)
 			store (stores value of stack[0] to register)
 			loadp8, loadp16, loadp32 (loads 8, 16 or 32 bit value from address at stack[0], widens to 32 bits)
+				loadpX are essentially stack[0] = *stack[0]
 			storep8, storep16, storep32 (narrows stack[1] to 8, 16 or 32 bits and writes it to address at stack[0])
+				storepX are essentially *stack[0] = stack[1]
 
 			push (reserve bytes on the stack, advances stack pointer)
 			pop  (free bytes back to the stack, retracts stack pointer)
@@ -171,6 +173,7 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 
 	labels := make(map[string]string)
 	preprocessedLines := make([][2]string, 0)
+	instructionLineCount := 0
 
 	// Allows us to easily find and replace commands from start to end of line
 	comments := regexp.MustCompile("//.*")
@@ -179,13 +182,13 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 	// into line numbers
 	for _, line := range lines {
 		var err error
-		preprocessedLines, err = preprocessLine(string(line), comments, labels, preprocessedLines, debugSymMap)
+		preprocessedLines, instructionLineCount, err = preprocessLine(string(line), comments, labels, preprocessedLines, instructionLineCount, debugSymMap)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	vm.program = make([]Instruction, 0, len(preprocessedLines))
+	vm.program = make([]Instruction, 0, instructionLineCount)
 
 	for _, line := range preprocessedLines {
 		// Replace all labels with their instruction address
@@ -204,14 +207,19 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 	return vm, nil
 }
 
-func (vm *VM) formatInstructionStr(prefix string) string {
-	pc := vm.pc
-	if *pc < Register(len(vm.program)) {
-		fmtStr := prefix + " %d: %s"
+func formatInstructionStr(vm *VM, pc Register, prefix string) string {
+	if pc < Register(len(vm.program)) {
 		if vm.debugSym != nil {
-			return fmt.Sprintf(fmtStr, *pc, vm.debugSym.source[int(*pc)])
+			return fmt.Sprintf(prefix+" %d: %s", pc, vm.debugSym.source[int(pc)])
 		} else {
-			return fmt.Sprintf(fmtStr, *pc, vm.program[*pc])
+			code := Bytecode(vm.program[pc])
+
+			if code.RequiresOpArg() {
+				oparg := uint32(vm.program[pc+1])
+				return fmt.Sprintf(prefix+" %d: %s %d", pc, code.String(), oparg)
+			} else {
+				return fmt.Sprintf(prefix+" %d: %s", pc, code.String())
+			}
 		}
 	}
 
@@ -219,32 +227,34 @@ func (vm *VM) formatInstructionStr(prefix string) string {
 }
 
 func (vm *VM) printCurrentState() {
-	instr := vm.formatInstructionStr("next instruction>")
+	instr := formatInstructionStr(vm, *vm.pc, "  next instruction>")
 	if instr != "" {
 		fmt.Println(instr)
 	}
 
-	fmt.Println("registers>", vm.registers)
+	fmt.Println("  registers>", vm.registers)
 	// Prints the stack in reverse order, meaning the first element is actually the last
 	// that will be removed
-	fmt.Println("reverse stack>", vm.stack[:*vm.sp])
+	fmt.Println("  reverse stack>", vm.stack[:*vm.sp])
 
 	vm.printDebugOutput()
 }
 
 func (vm *VM) printDebugOutput() {
 	if vm.debugOut != nil {
-		fmt.Println("output>", revertEscapeSeqReplacements(vm.debugOut.String()))
+		fmt.Println("  output>", revertEscapeSeqReplacements(vm.debugOut.String()))
 	}
 }
 
 func (vm *VM) printProgram() {
-	for i, instr := range vm.program {
-		if vm.debugSym != nil {
-			fmt.Printf("%d: %s\n", i, vm.debugSym.source[i])
-		} else {
-			fmt.Printf("%d: %s\n", i, instr)
+	for i := 0; i < len(vm.program); i++ {
+		codeIdx := i
+		code := Bytecode(vm.program[i])
+		if code.RequiresOpArg() {
+			i++
 		}
+
+		fmt.Println(formatInstructionStr(vm, Register(codeIdx), " "))
 	}
 }
 
@@ -295,14 +305,6 @@ func (vm *VM) popPeekStack() ([]byte, []byte) {
 	*vm.sp -= varchBytes
 	bytes := vm.stack[*vm.sp-varchBytes:]
 	return bytes[4:], bytes
-}
-
-// Pops the first element, peeks the second element
-// Converts both to uint32
-func (vm *VM) popPeekStackUint32() (uint32, uint32) {
-	*vm.sp -= varchBytes
-	bytes := vm.stack[*vm.sp-varchBytes:]
-	return uint32FromBytes(bytes[4:]), uint32FromBytes(bytes)
 }
 
 func (vm *VM) pushStackByte(value Register) {
@@ -388,6 +390,9 @@ func logicalXor(x, y []byte) {
 //
 // singleStep can be set when in debug mode so that this function runs 1 instruction
 // and then returns to caller.
+//
+// If an instruction requires arguments, they will be laid out as 32-bit instruction values
+// next to the main instruction in memory
 func (vm *VM) execInstructions(singleStep bool) {
 	for {
 		pc := vm.pc
@@ -397,26 +402,33 @@ func (vm *VM) execInstructions(singleStep bool) {
 		}
 
 		instr := vm.program[*pc]
-		*pc += 1
+		code := Bytecode(instr)
+		oparg := uint32(0)
+		*pc++
 
-		switch instr.code {
+		if code.RequiresOpArg() {
+			// It will be next to the main instruction
+			oparg = uint32(vm.program[*pc])
+			*pc++
+		}
+
+		switch code {
 		case Nop:
 		case Byte:
-			vm.pushStackByte(instr.arg)
+			vm.pushStackByte(oparg)
 		case Const:
-			vm.pushStack(instr.arg)
+			vm.pushStack(oparg)
 		case Load:
-			vm.pushStack(vm.registers[instr.arg])
+			vm.pushStack(vm.registers[oparg])
 		case Store:
-			regIdx := instr.arg
-			if regIdx < 2 {
+			if oparg < 2 {
 				// not allowed to write to program counter or stack pointer
 				vm.errcode = errIllegalOperation
 				return
 			}
 
 			regValue := uint32FromBytes(vm.popStack())
-			vm.registers[regIdx] = Register(regValue)
+			vm.registers[oparg] = Register(regValue)
 		case Loadp8:
 			addrBytes := vm.peekStack(varchBytes)
 			addr := uint32FromBytes(addrBytes)
