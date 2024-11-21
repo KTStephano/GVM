@@ -344,8 +344,8 @@ func (vm *GVM) PrintProgram() {
 	}
 }
 
-func NewVirtualMachine(debug bool, files ...string) (*GVM, error) {
-	vm := &GVM{stdin: bufio.NewReader(os.Stdin)}
+func NewVirtualMachine(debug bool, files ...string) (GVM, error) {
+	vm := GVM{stdin: bufio.NewReader(os.Stdin)}
 
 	// If requested, set up the VM in debug mode
 	var debugSymMap map[int]string
@@ -364,7 +364,7 @@ func NewVirtualMachine(debug bool, files ...string) (*GVM, error) {
 		file, err := os.Open(filename)
 		if err != nil {
 			fmt.Println("Could not read", filename)
-			return nil, err
+			return vm, err
 		}
 
 		reader := bufio.NewReader(file)
@@ -390,7 +390,7 @@ func NewVirtualMachine(debug bool, files ...string) (*GVM, error) {
 		var err error
 		preprocessedLines, err = preprocessLine(string(line), comments, labels, preprocessedLines, debugSymMap)
 		if err != nil {
-			return nil, err
+			return vm, err
 		}
 	}
 
@@ -404,7 +404,7 @@ func NewVirtualMachine(debug bool, files ...string) (*GVM, error) {
 
 		instrs, err := parseInputLine(line)
 		if err != nil {
-			return nil, err
+			return vm, err
 		}
 
 		vm.program = append(vm.program, instrs...)
@@ -949,7 +949,7 @@ func main() {
 	}()
 
 	if *debugVM {
-		execProgramDebugMode(vm)
+		execProgramDebugMode(&vm)
 	} else {
 		for {
 			vm.ExecNextInstruction()

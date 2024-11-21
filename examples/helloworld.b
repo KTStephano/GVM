@@ -29,9 +29,6 @@ loop:
     const 2
     load            // restores current string address onto stack
     loadp8          // dereference 1 byte (8 bits) value at address from stack[0], widens to 32-bits
-    const 2
-    load
-    loadp8          // same as above - jnz will consume one of them
     const writechar
     jnz
     const 4
