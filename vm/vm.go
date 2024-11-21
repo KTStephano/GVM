@@ -387,31 +387,6 @@ func logicalXor(x, y []byte) {
 	uint32ToBytes(uint32FromBytes(x)^uint32FromBytes(y), y)
 }
 
-func arithmeticLogical(vm *VM, op func([]byte, []byte)) {
-	arg0Bytes, arg1Bytes := vm.popPeekStack()
-
-	// Overwrites arg1Bytes with result of op
-	op(arg0Bytes, arg1Bytes)
-}
-
-func loadpX(vm *VM, sizeof uint32) {
-	addrBytes := vm.peekStack(varchBytes)
-	addr := uint32FromBytes(addrBytes)
-
-	result := uint32(0)
-	switch sizeof {
-	case 1:
-		result = uint32(vm.stack[addr])
-	case 2:
-		result = uint32(binary.LittleEndian.Uint16(vm.stack[addr:]))
-	case 4:
-		result = uint32(binary.LittleEndian.Uint32(vm.stack[addr:]))
-	}
-
-	// overwrite addrBytes with memory value
-	uint32ToBytes(result, addrBytes)
-}
-
 func storepX(vm *VM, sizeof uint32) {
 	addrBytes, valueBytes := vm.popStackx2()
 	addr := uint32FromBytes(addrBytes)
@@ -453,17 +428,40 @@ func (vm *VM) execNextInstruction() {
 		regValue := uint32FromBytes(vm.popStack())
 		vm.registers[regIdx] = Register(regValue)
 	case Loadp8:
-		loadpX(vm, 1)
+		addrBytes := vm.peekStack(varchBytes)
+		addr := uint32FromBytes(addrBytes)
+		// overwrite addrBytes with memory value
+		uint32ToBytes(uint32(vm.stack[addr]), addrBytes)
 	case Loadp16:
-		loadpX(vm, 2)
+		addrBytes := vm.peekStack(varchBytes)
+		addr := uint32FromBytes(addrBytes)
+		// overwrite addrBytes with memory value
+		uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.stack[addr:])), addrBytes)
 	case Loadp32:
-		loadpX(vm, 4)
+		addrBytes := vm.peekStack(varchBytes)
+		addr := uint32FromBytes(addrBytes)
+		// overwrite addrBytes with memory value
+		uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.stack[addr:])), addrBytes)
 	case Storep8:
-		storepX(vm, 1)
+		addrBytes, valueBytes := vm.popStackx2()
+		addr := uint32FromBytes(addrBytes)
+		vm.stack[addr] = valueBytes[0]
 	case Storep16:
-		storepX(vm, 2)
+		addrBytes, valueBytes := vm.popStackx2()
+		addr := uint32FromBytes(addrBytes)
+
+		// unrolled loop
+		vm.stack[addr] = valueBytes[0]
+		vm.stack[addr+1] = valueBytes[1]
 	case Storep32:
-		storepX(vm, 4)
+		addrBytes, valueBytes := vm.popStackx2()
+		addr := uint32FromBytes(addrBytes)
+
+		// unrolled loop
+		vm.stack[addr+0] = valueBytes[0]
+		vm.stack[addr+1] = valueBytes[1]
+		vm.stack[addr+2] = valueBytes[2]
+		vm.stack[addr+3] = valueBytes[3]
 	case Push:
 		bytes := uint32FromBytes(vm.popStack())
 		*vm.sp = *vm.sp + Register(bytes)
