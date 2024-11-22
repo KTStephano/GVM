@@ -173,7 +173,6 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 
 	labels := make(map[string]string)
 	preprocessedLines := make([][2]string, 0)
-	instructionLineCount := 0
 
 	// Allows us to easily find and replace commands from start to end of line
 	comments := regexp.MustCompile("//.*")
@@ -182,13 +181,13 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 	// into line numbers
 	for _, line := range lines {
 		var err error
-		preprocessedLines, instructionLineCount, err = preprocessLine(string(line), comments, labels, preprocessedLines, instructionLineCount, debugSymMap)
+		preprocessedLines, err = preprocessLine(string(line), comments, labels, preprocessedLines, debugSymMap)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	vm.program = make([]Instruction, 0, instructionLineCount)
+	vm.program = make([]Instruction, 0, len(preprocessedLines))
 
 	for _, line := range preprocessedLines {
 		// Replace all labels with their instruction address
@@ -201,7 +200,7 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 			return nil, err
 		}
 
-		vm.program = append(vm.program, instrs...)
+		vm.program = append(vm.program, instrs)
 	}
 
 	return vm, nil
@@ -212,14 +211,7 @@ func formatInstructionStr(vm *VM, pc Register, prefix string) string {
 		if vm.debugSym != nil {
 			return fmt.Sprintf(prefix+" %d: %s", pc, vm.debugSym.source[int(pc)])
 		} else {
-			code := Bytecode(vm.program[pc])
-
-			if code.RequiresOpArg() {
-				oparg := uint32(vm.program[pc+1])
-				return fmt.Sprintf(prefix+" %d: %s %d", pc, code.String(), oparg)
-			} else {
-				return fmt.Sprintf(prefix+" %d: %s", pc, code.String())
-			}
+			return fmt.Sprintf(prefix+" %d: %s", pc, vm.program[pc])
 		}
 	}
 
@@ -247,14 +239,8 @@ func (vm *VM) printDebugOutput() {
 }
 
 func (vm *VM) printProgram() {
-	for i := 0; i < len(vm.program); i++ {
-		codeIdx := i
-		code := Bytecode(vm.program[i])
-		if code.RequiresOpArg() {
-			i++
-		}
-
-		fmt.Println(formatInstructionStr(vm, Register(codeIdx), " "))
+	for i := range vm.program {
+		fmt.Println(formatInstructionStr(vm, Register(i), " "))
 	}
 }
 
@@ -402,15 +388,9 @@ func (vm *VM) execInstructions(singleStep bool) {
 		}
 
 		instr := vm.program[*pc]
-		code := Bytecode(instr)
-		oparg := uint32(0)
+		code := Bytecode(instr.code)
+		oparg := instr.arg
 		*pc++
-
-		if code.RequiresOpArg() {
-			// It will be next to the main instruction
-			oparg = uint32(vm.program[*pc])
-			*pc++
-		}
 
 		switch code {
 		case Nop:

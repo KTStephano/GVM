@@ -1,5 +1,7 @@
 package gvm
 
+import "fmt"
+
 type Bytecode byte
 
 const (
@@ -49,10 +51,10 @@ const (
 // = uint32 so that Register is a type alias for uint32 - no casting needed
 type Register = uint32
 
-// No = uint32 since instruction is its own explicit type - casting required
-// If an instruction requires arguments, they can be laid out as additional
-// instruction entries next to it in memory
-type Instruction uint32
+type Instruction struct {
+	code uint32
+	arg  uint32
+}
 
 var (
 	// Maps from string -> instruction
@@ -114,6 +116,13 @@ var (
 	}
 )
 
+func NewInstruction(code Bytecode, arg uint32) Instruction {
+	return Instruction{
+		code: uint32(code),
+		arg:  arg,
+	}
+}
+
 // Convert bytecode to string
 func (b Bytecode) String() string {
 	str, ok := instrToStrMap[b]
@@ -127,6 +136,22 @@ func (b Bytecode) String() string {
 // with it, such as const X
 func (b Bytecode) RequiresOpArg() bool {
 	return b == Const || b == Byte || b == Load || b == Store
+}
+
+func (instr Instruction) String() string {
+	code := Bytecode(instr.code)
+	if code.RequiresOpArg() {
+		intArg := int32(instr.arg)
+		if intArg < 0 {
+			// Add both the negative and unsigned version to the output
+			return fmt.Sprintf("%s %d (%d)", code.String(), intArg, instr.arg)
+		}
+		// Only include the unsigned version
+		return fmt.Sprintf("%s %d", code.String(), instr.arg)
+	} else {
+		// No op arg - only include code string
+		return code.String()
+	}
 }
 
 // This is called when package is first loaded (before main)
