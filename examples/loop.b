@@ -1,4 +1,4 @@
-    const 70000000
+    const 50000000
     store 2
 
 loop:
@@ -7,5 +7,4 @@ loop:
     addi
     store 2
     load 2
-    const loop
-    jnz
+    jnz loop

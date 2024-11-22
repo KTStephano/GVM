@@ -65,7 +65,11 @@ func (vm *VM) RunProgramDebugMode() {
 
 			if vm.errcode != nil {
 				vm.printDebugOutput()
-				fmt.Println(vm.errcode)
+				if vm.errcode != errProgramFinished {
+					// pc-1 should be the instruction that failed
+					fmt.Println(formatInstructionStr(vm, *vm.pc-1, vm.errcode.Error()))
+				}
+
 				return
 			}
 		} else if line == "program" {
