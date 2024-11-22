@@ -13,11 +13,17 @@ func getDefaultRecoverFuncForVM(vm *VM) func() {
 	return func() {
 		if r := recover(); r != nil {
 			err := errSegmentationFault
+			pc := *vm.pc
+			// Back up the program counter to offending address if possible
+			if pc > 0 {
+				pc--
+			}
+
 			if vm.errcode != nil {
 				err = vm.errcode
 			}
 
-			fmt.Printf("%s%s\n", err, formatInstructionStr(vm, *vm.pc, " at instruction:"))
+			fmt.Printf("%s%s\n", err, formatInstructionStr(vm, pc, " at instruction:"))
 		}
 	}
 }

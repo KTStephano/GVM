@@ -35,6 +35,9 @@ import (
 			storep8, storep16, storep32 (narrows stack[1] to 8, 16 or 32 bits and writes it to address at stack[0])
 				storepX are essentially *stack[0] = stack[1]
 
+		The push/pop instructions accept an optional argument. This argument is the number of bytes to push to or pop from the stack.
+		If no argument is specified, stack[0] should hold the bytes argument.
+
 			push (reserve bytes on the stack, advances stack pointer)
 			pop  (free bytes back to the stack, retracts stack pointer)
 
@@ -486,9 +489,13 @@ func (vm *VM) execInstructions(singleStep bool) {
 		case Push:
 			bytes := getPushPopValue(vm, oparg, data)
 			*vm.sp = *vm.sp - register(bytes)
+			// This will ensure we catch invalid stack addresses
+			var _ = vm.stack[*vm.sp]
 		case Pop:
 			bytes := getPushPopValue(vm, oparg, data)
 			*vm.sp = *vm.sp + register(bytes)
+			// This will ensure we catch invalid stack addresses
+			var _ = vm.stack[*vm.sp]
 		case Addi:
 			arg0Bytes, arg1Bytes := vm.popPeekStack()
 			// Overwrites arg1Bytes with result of op
