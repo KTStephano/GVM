@@ -260,6 +260,8 @@ func (vm *VM) printProgram() {
 	}
 }
 
+// Converts bytes -> uint32, assuming the given bytes are at least
+// a sequence of 4 and that they were encoded as little endian
 func uint32FromBytes(bytes []byte) uint32 {
 	return binary.LittleEndian.Uint32(bytes)
 }
@@ -272,6 +274,7 @@ func float32FromBytes(bytes []byte) float32 {
 	return math.Float32frombits(uint32FromBytes(bytes))
 }
 
+// Converts uint32 to a sequence of 4 bytes encoded as little endian
 func uint32ToBytes(u uint32, bytes []byte) {
 	binary.LittleEndian.PutUint32(bytes, u)
 }
