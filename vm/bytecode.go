@@ -47,12 +47,6 @@ const (
 	Exit     Bytecode = 0x25
 )
 
-// Each register is just a bit pattern with no concept of
-// type (signed, unsigned int or float)
-//
-// = uint32 so that Register is a type alias for uint32 - no casting needed
-type Register = uint32
-
 type Instruction struct {
 	code uint32
 	arg  uint32
@@ -148,7 +142,8 @@ func (b Bytecode) RequiresOpArg() bool {
 // True if the bytecode can optionally accept an argument instead of
 // always inspecting the stack
 func (b Bytecode) OptionalOpArg() bool {
-	return b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg
+	return b == Push || b == Pop ||
+		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg
 }
 
 func (instr Instruction) String() string {

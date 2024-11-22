@@ -94,6 +94,12 @@ import (
 			store	// stack: [], 	   register 2: 12
 */
 
+// Each register is just a bit pattern with no concept of
+// type (signed, unsigned int or float)
+//
+// = uint32 so that register is a type alias for uint32 - no casting needed
+type register = uint32
+
 // We store these if we want extra debug information
 type debugSymbols struct {
 	// maps from line num -> source
@@ -101,9 +107,9 @@ type debugSymbols struct {
 }
 
 type VM struct {
-	registers [numRegisters]Register
-	pc        *Register // program counter
-	sp        *Register // stack pointer
+	registers [numRegisters]register
+	pc        *register // program counter
+	sp        *register // stack pointer
 
 	stack   [stackSize]byte
 	program []Instruction
@@ -129,8 +135,8 @@ const (
 	numRegisters uint32 = 32
 	stackSize    uint32 = 65536
 	// 4 bytes since our virtual architecture is 32-bit
-	varchBytes   Register = 4
-	varchBytesx2 Register = 2 * varchBytes
+	varchBytes   register = 4
+	varchBytesx2 register = 2 * varchBytes
 )
 
 var (
@@ -215,8 +221,8 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 	return vm, nil
 }
 
-func formatInstructionStr(vm *VM, pc Register, prefix string) string {
-	if pc < Register(len(vm.program)) {
+func formatInstructionStr(vm *VM, pc register, prefix string) string {
+	if pc < register(len(vm.program)) {
 		if vm.debugSym != nil {
 			return fmt.Sprintf(prefix+" %d: %s", pc, vm.debugSym.source[int(pc)])
 		} else {
@@ -247,7 +253,7 @@ func (vm *VM) printDebugOutput() {
 
 func (vm *VM) printProgram() {
 	for i := range vm.program {
-		fmt.Println(formatInstructionStr(vm, Register(i), " "))
+		fmt.Println(formatInstructionStr(vm, register(i), " "))
 	}
 }
 
@@ -306,12 +312,12 @@ func (vm *VM) popPeekStack() ([]byte, []byte) {
 	return bytes, bytes[varchBytes:]
 }
 
-func (vm *VM) pushStackByte(value Register) {
+func (vm *VM) pushStackByte(value register) {
 	*vm.sp--
 	vm.stack[*vm.sp] = byte(value)
 }
 
-func (vm *VM) pushStack(value Register) {
+func (vm *VM) pushStack(value register) {
 	*vm.sp -= varchBytes
 	uint32ToBytes(value, vm.stack[*vm.sp:])
 }
@@ -381,6 +387,20 @@ func logicalXor(x, y []byte) {
 	uint32ToBytes(uint32FromBytes(x)^uint32FromBytes(y), y)
 }
 
+// Returns value (bytes) for the push/pop instructions. If data > 0
+// it will use oparg as the value, otherwise it will pop the bytes value
+// from the stack
+func getPushPopValue(vm *VM, oparg, data uint32) uint32 {
+	if data == 0 {
+		return vm.popStackUint32()
+	} else {
+		return oparg
+	}
+}
+
+// Returns (addr, value) for the conditional jumps. If data is > 0
+// it will use oparg as the address, otherwise it will pop the address
+// from the stack.
 func getJumpAddrValue(vm *VM, oparg, data uint32) (uint32, uint32) {
 	if data == 0 {
 		return vm.popStackx2Uint32()
@@ -401,7 +421,7 @@ func getJumpAddrValue(vm *VM, oparg, data uint32) (uint32, uint32) {
 func (vm *VM) execInstructions(singleStep bool) {
 	for {
 		pc := vm.pc
-		if *pc >= Register(len(vm.program)) {
+		if *pc >= register(len(vm.program)) {
 			vm.errcode = errProgramFinished
 			return
 		}
@@ -427,7 +447,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			}
 
 			regValue := uint32FromBytes(vm.popStack())
-			vm.registers[oparg] = Register(regValue)
+			vm.registers[oparg] = register(regValue)
 		case Loadp8:
 			addrBytes := vm.peekStack()
 			addr := uint32FromBytes(addrBytes)
@@ -464,11 +484,11 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.stack[addr+2] = valueBytes[2]
 			vm.stack[addr+3] = valueBytes[3]
 		case Push:
-			bytes := uint32FromBytes(vm.popStack())
-			*vm.sp = *vm.sp - Register(bytes)
+			bytes := getPushPopValue(vm, oparg, data)
+			*vm.sp = *vm.sp - register(bytes)
 		case Pop:
-			bytes := uint32FromBytes(vm.popStack())
-			*vm.sp = *vm.sp + Register(bytes)
+			bytes := getPushPopValue(vm, oparg, data)
+			*vm.sp = *vm.sp + register(bytes)
 		case Addi:
 			arg0Bytes, arg1Bytes := vm.popPeekStack()
 			// Overwrites arg1Bytes with result of op
@@ -522,7 +542,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			if data == 0 {
 				addr = uint32FromBytes(vm.popStack())
 			}
-			*pc = Register(addr)
+			*pc = register(addr)
 		case Jz:
 			addr, value := getJumpAddrValue(vm, oparg, data)
 			if value == 0 {
@@ -578,7 +598,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.pushStack(uint32(character))
 		case Exit:
 			// Sets the pc to be one after the last instruction
-			*pc = Register(len(vm.program))
+			*pc = register(len(vm.program))
 		default:
 			// Shouldn't get here since we preprocess+parse all source into
 			// valid instructions before executing
