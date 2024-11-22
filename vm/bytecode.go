@@ -97,19 +97,6 @@ var (
 
 	// Maps from instruction -> string (built from strToInstrMap)
 	instrToStrMap map[Bytecode]string
-
-	// Allows us to replace \\* escape sequence with \*, such as \\n -> \n
-	// (happens when reading from console or file)
-	escapeSeqReplacements = map[string]string{
-		"\\a":  "\a",
-		"\\b":  "\b",
-		"\\t":  "\t",
-		"\\n":  "\n",
-		"\\r":  "\r",
-		"\\f":  "\f",
-		"\\v":  "\v",
-		"\\\"": "\"",
-	}
 )
 
 func NewInstruction(code Bytecode, arg uint32, data uint16) Instruction {

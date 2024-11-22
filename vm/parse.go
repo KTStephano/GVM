@@ -11,7 +11,22 @@ import (
 )
 
 // Allows us to easily find and replace commands from start to end of line
-var comments = regexp.MustCompile("//.*")
+var (
+	comments = regexp.MustCompile("//.*")
+
+	// Allows us to replace \\* escape sequence with \*, such as \\n -> \n
+	// (happens when reading from console or file)
+	escapeSeqReplacements = map[string]string{
+		"\\a":  "\a",
+		"\\b":  "\b",
+		"\\t":  "\t",
+		"\\n":  "\n",
+		"\\r":  "\r",
+		"\\f":  "\f",
+		"\\v":  "\v",
+		"\\\"": "\"",
+	}
+)
 
 // Checks for things like \\n and replaces it with \n
 func insertEscapeSeqReplacements(line string) string {
