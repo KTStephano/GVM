@@ -7,7 +7,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
+
+// Allows us to easily find and replace commands from start to end of line
+var comments = regexp.MustCompile("//.*")
 
 // Checks for things like \\n and replaces it with \n
 func insertEscapeSeqReplacements(line string) string {
@@ -25,7 +29,7 @@ func revertEscapeSeqReplacements(line string) string {
 	return line
 }
 
-func preprocessLine(line string, comments *regexp.Regexp, labels map[string]string, lines [][2]string, debugSym map[int]string) ([][2]string, error) {
+func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][2]string, debugSym map[int]string) ([][2]string, error) {
 	line = comments.ReplaceAllString(line, "")
 	line = strings.TrimSpace(line)
 
@@ -36,7 +40,20 @@ func preprocessLine(line string, comments *regexp.Regexp, labels map[string]stri
 	} else if strings.HasSuffix(line, ":") {
 		// Get rid of the : in the label
 		label := strings.ReplaceAll(line, ":", "")
-		labels[label] = fmt.Sprintf("%d", len(lines))
+
+		// Make sure the label doesn't contain any inner whitespace
+		if strings.ContainsFunc(label, unicode.IsSpace) {
+			return nil, fmt.Errorf("invalid label (inner whitespace not allowed): %s", line)
+		}
+
+		// Compile into a regex pattern that only matches on label<word boundary> where label is at the beginning
+		// of the argument (so label inside of a string or quotes will be ignored)
+		r, err := regexp.Compile(fmt.Sprintf(`^%s\b`, label))
+		if err != nil {
+			return nil, fmt.Errorf("invalid label: %s", line)
+		}
+
+		labels[r] = fmt.Sprintf("%d", len(lines))
 		if debugSym != nil {
 			debugSym[len(lines)] = label
 		}

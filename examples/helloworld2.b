@@ -4,17 +4,16 @@
     store 2                     // store address in register 2
 
 loop:
-    load 2                      // load current address
-    const -1
-    addi
-    store 2                     // subtract 1 byte from string address, store in register 2
-    load 2                      // load new address back onto stack
-    loadp8                      // dereference 1 byte, widen to 32 bits
-    jz done                     // if current byte is 0, jump to done
-    load 2
-    loadp8
-    writec                      // load current character back to stack, write to console
-    jmp loop                    // unconditional jump back to loop
-
-done:
+    load 2                      // load string address from register 2
+    loadp8                      // dereference 1 byte (*stack[0]), widen to 32 bits
+    jnz writechar               // if character is not 0, jump to writechar
     exit
+writechar:
+    load 2
+    loadp8                      // *stack[0] (dereference)
+    writec                      // write 32 bit character
+    load 2
+    const 1
+    addi
+    store 2                     // addi register[2] 1, store in register[2]
+    jmp loop

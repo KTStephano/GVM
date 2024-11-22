@@ -189,17 +189,15 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 		}
 	}
 
-	labels := make(map[string]string)
+	// Maps from regex(label) -> address string
+	labels := make(map[*regexp.Regexp]string)
 	preprocessedLines := make([][2]string, 0)
-
-	// Allows us to easily find and replace commands from start to end of line
-	comments := regexp.MustCompile("//.*")
 
 	// First preprocess line to remove whitespace lines and convert labels
 	// into line numbers
 	for _, line := range lines {
 		var err error
-		preprocessedLines, err = preprocessLine(string(line), comments, labels, preprocessedLines, debugSymMap)
+		preprocessedLines, err = preprocessLine(string(line), labels, preprocessedLines, debugSymMap)
 		if err != nil {
 			return nil, err
 		}
@@ -210,7 +208,7 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 	for _, line := range preprocessedLines {
 		// Replace all labels with their instruction address
 		for label, lineNum := range labels {
-			line[1] = strings.ReplaceAll(line[1], label, lineNum)
+			line[1] = label.ReplaceAllString(line[1], lineNum)
 		}
 
 		instrs, err := parseInputLine(line)
