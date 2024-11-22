@@ -1,6 +1,8 @@
 package gvm
 
-import "fmt"
+import (
+	"fmt"
+)
 
 type Bytecode byte
 
@@ -116,11 +118,16 @@ var (
 	}
 )
 
-func NewInstruction(code Bytecode, arg uint32) Instruction {
+func NewInstruction(code Bytecode, arg uint32, data uint16) Instruction {
 	return Instruction{
-		code: uint32(code),
+		code: uint32(code) | (uint32(data) << 8),
 		arg:  arg,
 	}
+}
+
+// Splits an instruction code into (bytecode, data) pair
+func (instr Instruction) DecodeInstruction() (Bytecode, uint32) {
+	return Bytecode(instr.code & 0xff), (instr.code & 0xffffff00) >> 8
 }
 
 // Convert bytecode to string
@@ -138,9 +145,15 @@ func (b Bytecode) RequiresOpArg() bool {
 	return b == Const || b == Byte || b == Load || b == Store
 }
 
+// True if the bytecode can optionally accept an argument instead of
+// always inspecting the stack
+func (b Bytecode) OptionalOpArg() bool {
+	return b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg
+}
+
 func (instr Instruction) String() string {
-	code := Bytecode(instr.code)
-	if code.RequiresOpArg() {
+	code, data := instr.DecodeInstruction()
+	if code.RequiresOpArg() || (code.OptionalOpArg() && data > 0) {
 		intArg := int32(instr.arg)
 		if intArg < 0 {
 			// Add both the negative and unsigned version to the output

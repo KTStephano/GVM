@@ -280,6 +280,12 @@ func (vm *VM) popStackx2() ([]byte, []byte) {
 	return bytes[4:], bytes
 }
 
+func (vm *VM) popStackUint32() uint32 {
+	start := *vm.sp - varchBytes
+	*vm.sp = start
+	return uint32FromBytes(vm.stack[start:])
+}
+
 func (vm *VM) popStackx2Uint32() (uint32, uint32) {
 	*vm.sp -= varchBytesx2
 	bytes := vm.stack[*vm.sp:]
@@ -370,6 +376,14 @@ func logicalXor(x, y []byte) {
 	uint32ToBytes(uint32FromBytes(x)^uint32FromBytes(y), y)
 }
 
+func getJumpAddrValue(vm *VM, oparg, data uint32) (uint32, uint32) {
+	if data == 0 {
+		return vm.popStackx2Uint32()
+	} else {
+		return oparg, vm.popStackUint32()
+	}
+}
+
 // This is considered a tight loop. It's ok to move certain things to functions
 // if the functions are very simple (meaning Go's inlining rules take over), but
 // otherwise it's best to try and embed the logic directly into the switch statement.
@@ -388,7 +402,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 		}
 
 		instr := vm.program[*pc]
-		code := Bytecode(instr.code)
+		code, data := instr.DecodeInstruction()
 		oparg := instr.arg
 		*pc++
 
@@ -499,35 +513,38 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// Overwrites arg1Bytes with result of op
 			logicalXor(arg0Bytes, arg1Bytes)
 		case Jmp:
-			addr := uint32FromBytes(vm.popStack())
+			addr := oparg
+			if data == 0 {
+				addr = uint32FromBytes(vm.popStack())
+			}
 			*pc = Register(addr)
 		case Jz:
-			addr, value := vm.popStackx2Uint32()
+			addr, value := getJumpAddrValue(vm, oparg, data)
 			if value == 0 {
 				*vm.pc = addr
 			}
 		case Jnz:
-			addr, value := vm.popStackx2Uint32()
+			addr, value := getJumpAddrValue(vm, oparg, data)
 			if value != 0 {
 				*vm.pc = addr
 			}
 		case Jle:
-			addr, value := vm.popStackx2Uint32()
+			addr, value := getJumpAddrValue(vm, oparg, data)
 			if int32(value) <= 0 {
 				*vm.pc = addr
 			}
 		case Jl:
-			addr, value := vm.popStackx2Uint32()
+			addr, value := getJumpAddrValue(vm, oparg, data)
 			if int32(value) < 0 {
 				*vm.pc = addr
 			}
 		case Jge:
-			addr, value := vm.popStackx2Uint32()
+			addr, value := getJumpAddrValue(vm, oparg, data)
 			if int32(value) >= 0 {
 				*vm.pc = addr
 			}
 		case Jg:
-			addr, value := vm.popStackx2Uint32()
+			addr, value := getJumpAddrValue(vm, oparg, data)
 			if int32(value) > 0 {
 				*vm.pc = addr
 			}

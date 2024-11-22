@@ -10,13 +10,11 @@ loop:
     store 2                     // subtract 1 byte from string address, store in register 2
     load 2                      // load new address back onto stack
     loadp8                      // dereference 1 byte, widen to 32 bits
-    const done
-    jz                          // if current byte is 0, jump to done
+    jz done                     // if current byte is 0, jump to done
     load 2
     loadp8
     writec                      // load current character back to stack, write to console
-    const loop
-    jmp                         // unconditional jump back to loop
+    jmp loop                    // unconditional jump back to loop
 
 done:
     exit

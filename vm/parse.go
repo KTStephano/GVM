@@ -100,7 +100,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 
 	strArg := line[1]
 	if strArg != "" {
-		if !code.RequiresOpArg() {
+		if !code.RequiresOpArg() && !code.OptionalOpArg() {
 			return Instruction{}, fmt.Errorf("%s does not require an op argument", code.String())
 		}
 
@@ -112,7 +112,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 				return Instruction{}, errors.New("character is too large to fit into 32 bits")
 			}
 
-			return NewInstruction(code, uint32(runes[1])), nil
+			return NewInstruction(code, uint32(runes[1]), 1), nil
 		} else {
 			// Likely a regular number or float
 			if strings.Contains(strArg, ".") {
@@ -121,7 +121,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 					return Instruction{}, err
 				}
 
-				return NewInstruction(code, math.Float32bits(float32(arg))), nil
+				return NewInstruction(code, math.Float32bits(float32(arg)), 1), nil
 			} else {
 				var arg int64
 				var err error
@@ -138,7 +138,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 					return Instruction{}, err
 				}
 
-				return NewInstruction(code, uint32(arg)), nil
+				return NewInstruction(code, uint32(arg), 1), nil
 			}
 		}
 	} else {
@@ -146,6 +146,6 @@ func parseInputLine(line [2]string) (Instruction, error) {
 			return Instruction{}, fmt.Errorf("%s requires an op argument", code.String())
 		}
 
-		return NewInstruction(code, 0), nil
+		return NewInstruction(code, 0, 0), nil
 	}
 }
