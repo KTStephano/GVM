@@ -283,9 +283,15 @@ func (vm *VM) peekStack() []byte {
 }
 
 func (vm *VM) popStack() []byte {
-	start := *vm.sp
+	bytes := vm.stack[*vm.sp:]
 	*vm.sp += varchBytes
-	return vm.stack[start:]
+	return bytes
+}
+
+func (vm *VM) popStackUint32() uint32 {
+	val := uint32FromBytes(vm.stack[*vm.sp:])
+	*vm.sp += varchBytes
+	return val
 }
 
 func (vm *VM) popStackx2() ([]byte, []byte) {
@@ -294,19 +300,13 @@ func (vm *VM) popStackx2() ([]byte, []byte) {
 	return bytes, bytes[varchBytes:]
 }
 
-func (vm *VM) popStackUint32() uint32 {
-	start := *vm.sp
-	*vm.sp += varchBytes
-	return uint32FromBytes(vm.stack[start:])
-}
-
 func (vm *VM) popStackx2Uint32() (uint32, uint32) {
 	bytes := vm.stack[*vm.sp:]
 	*vm.sp += varchBytesx2
 	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:])
 }
 
-// Pops the first element, peeks the second element
+// Pops the first argument, peeks the second
 func (vm *VM) popPeekStack() ([]byte, []byte) {
 	bytes := vm.stack[*vm.sp:]
 	*vm.sp += varchBytes
