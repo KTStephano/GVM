@@ -278,28 +278,33 @@ func float32ToBytes(f float32, bytes []byte) {
 	uint32ToBytes(math.Float32bits(f), bytes)
 }
 
+// Returns current top of stack without moving stack pointer
 func (vm *VM) peekStack() []byte {
 	return vm.stack[*vm.sp:]
 }
 
+// Returns top of stack before moving stack pointer forward
 func (vm *VM) popStack() []byte {
 	bytes := vm.stack[*vm.sp:]
 	*vm.sp += varchBytes
 	return bytes
 }
 
+// Returns top of stack (as uint32) before moving stack pointer forward
 func (vm *VM) popStackUint32() uint32 {
 	val := uint32FromBytes(vm.stack[*vm.sp:])
 	*vm.sp += varchBytes
 	return val
 }
 
+// Returns 1st and 2nd top stack values before moving stack pointer forward
 func (vm *VM) popStackx2() ([]byte, []byte) {
 	bytes := vm.stack[*vm.sp:]
 	*vm.sp += varchBytesx2
 	return bytes, bytes[varchBytes:]
 }
 
+// Returns 1st and 2nd top stack values (as uint32) before moving stack pointer forward
 func (vm *VM) popStackx2Uint32() (uint32, uint32) {
 	bytes := vm.stack[*vm.sp:]
 	*vm.sp += varchBytesx2
@@ -313,11 +318,13 @@ func (vm *VM) popPeekStack() ([]byte, []byte) {
 	return bytes, bytes[varchBytes:]
 }
 
+// Narrows value to 1 byte and pushes it to the stack
 func (vm *VM) pushStackByte(value register) {
 	*vm.sp--
 	vm.stack[*vm.sp] = byte(value)
 }
 
+// Pushes value to stack unmodified
 func (vm *VM) pushStack(value register) {
 	*vm.sp -= varchBytes
 	uint32ToBytes(value, vm.stack[*vm.sp:])

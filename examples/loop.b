@@ -1,4 +1,4 @@
-    const 10000000
+    const 50000000
     store 2
 
 loop:
