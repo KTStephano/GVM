@@ -48,6 +48,12 @@ import (
 			or  (logical OR between stack[0] and stack[1])
 			xor (logical XOR between stack[0] and stack[1])
 
+		Each of the jump instructions accept an optional argument. If no argument is specified, stack[0] is where
+		they check for their jump address. Otherwise the argument is treated as the jump address.
+
+		Example: jnz addr (jump to addr if stack[0] is not 0)
+				 jnz	  (jump to stack[0] if stack[1] is not 0)
+
 			jmp  (unconditional jump to address at stack[0])
 			jz   (jump to address at stack[0] if stack[1] is 0)
 			jnz  (jump to address at stack[0] if stack[1] is not 0)
@@ -120,8 +126,8 @@ type numeric32 interface {
 }
 
 const (
-	numRegisters int = 32
-	stackSize    int = 65536
+	numRegisters uint32 = 32
+	stackSize    uint32 = 65536
 	// 4 bytes since our virtual architecture is 32-bit
 	varchBytes   Register = 4
 	varchBytesx2 Register = 2 * varchBytes
@@ -139,6 +145,9 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 	vm := &VM{stdin: bufio.NewReader(os.Stdin)}
 	vm.pc = &vm.registers[0]
 	vm.sp = &vm.registers[1]
+	// Set stack pointer to be 1 after the last valid stack address
+	// (indexing this will trigger a seg fault)
+	*vm.sp = stackSize
 
 	// If requested, set up the VM in debug mode
 	var debugSymMap map[int]string
@@ -225,9 +234,7 @@ func (vm *VM) printCurrentState() {
 	}
 
 	fmt.Println("  registers>", vm.registers)
-	// Prints the stack in reverse order, meaning the first element is actually the last
-	// that will be removed
-	fmt.Println("  reverse stack>", vm.stack[:*vm.sp])
+	fmt.Println("  stack>", vm.stack[*vm.sp:])
 
 	vm.printDebugOutput()
 }
@@ -264,51 +271,49 @@ func float32ToBytes(f float32, bytes []byte) {
 	uint32ToBytes(math.Float32bits(f), bytes)
 }
 
-func (vm *VM) peekStack(offset Register) []byte {
-	return vm.stack[*vm.sp-offset:]
+func (vm *VM) peekStack() []byte {
+	return vm.stack[*vm.sp:]
 }
 
 func (vm *VM) popStack() []byte {
-	start := *vm.sp - varchBytes
-	*vm.sp = start
+	start := *vm.sp
+	*vm.sp += varchBytes
 	return vm.stack[start:]
 }
 
 func (vm *VM) popStackx2() ([]byte, []byte) {
-	*vm.sp -= varchBytesx2
 	bytes := vm.stack[*vm.sp:]
-	return bytes[4:], bytes
+	*vm.sp += varchBytesx2
+	return bytes, bytes[varchBytes:]
 }
 
 func (vm *VM) popStackUint32() uint32 {
-	start := *vm.sp - varchBytes
-	*vm.sp = start
+	start := *vm.sp
+	*vm.sp += varchBytes
 	return uint32FromBytes(vm.stack[start:])
 }
 
 func (vm *VM) popStackx2Uint32() (uint32, uint32) {
-	*vm.sp -= varchBytesx2
 	bytes := vm.stack[*vm.sp:]
-	return uint32FromBytes(bytes[4:]), uint32FromBytes(bytes)
+	*vm.sp += varchBytesx2
+	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:])
 }
 
 // Pops the first element, peeks the second element
 func (vm *VM) popPeekStack() ([]byte, []byte) {
-	*vm.sp -= varchBytes
-	bytes := vm.stack[*vm.sp-varchBytes:]
-	return bytes[4:], bytes
+	bytes := vm.stack[*vm.sp:]
+	*vm.sp += varchBytes
+	return bytes, bytes[varchBytes:]
 }
 
 func (vm *VM) pushStackByte(value Register) {
-	start := *vm.sp
-	*vm.sp++
-	vm.stack[start] = byte(value)
+	*vm.sp--
+	vm.stack[*vm.sp] = byte(value)
 }
 
 func (vm *VM) pushStack(value Register) {
-	start := *vm.sp
-	*vm.sp += varchBytes
-	uint32ToBytes(value, vm.stack[start:])
+	*vm.sp -= varchBytes
+	uint32ToBytes(value, vm.stack[*vm.sp:])
 }
 
 func compare[T numeric32](x, y T) uint32 {
@@ -424,17 +429,17 @@ func (vm *VM) execInstructions(singleStep bool) {
 			regValue := uint32FromBytes(vm.popStack())
 			vm.registers[oparg] = Register(regValue)
 		case Loadp8:
-			addrBytes := vm.peekStack(varchBytes)
+			addrBytes := vm.peekStack()
 			addr := uint32FromBytes(addrBytes)
 			// overwrite addrBytes with memory value
 			uint32ToBytes(uint32(vm.stack[addr]), addrBytes)
 		case Loadp16:
-			addrBytes := vm.peekStack(varchBytes)
+			addrBytes := vm.peekStack()
 			addr := uint32FromBytes(addrBytes)
 			// overwrite addrBytes with memory value
 			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.stack[addr:])), addrBytes)
 		case Loadp32:
-			addrBytes := vm.peekStack(varchBytes)
+			addrBytes := vm.peekStack()
 			addr := uint32FromBytes(addrBytes)
 			// overwrite addrBytes with memory value
 			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.stack[addr:])), addrBytes)
@@ -460,10 +465,10 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.stack[addr+3] = valueBytes[3]
 		case Push:
 			bytes := uint32FromBytes(vm.popStack())
-			*vm.sp = *vm.sp + Register(bytes)
+			*vm.sp = *vm.sp - Register(bytes)
 		case Pop:
 			bytes := uint32FromBytes(vm.popStack())
-			*vm.sp = *vm.sp - Register(bytes)
+			*vm.sp = *vm.sp + Register(bytes)
 		case Addi:
 			arg0Bytes, arg1Bytes := vm.popPeekStack()
 			// Overwrites arg1Bytes with result of op
@@ -497,7 +502,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// Overwrites arg1Bytes with result of op
 			arithDivf(arg0Bytes, arg1Bytes)
 		case Not:
-			arg := vm.peekStack(varchBytes)
+			arg := vm.peekStack()
 			// Invert all bits, store result in arg
 			uint32ToBytes(^uint32FromBytes(arg), arg)
 		case And:
