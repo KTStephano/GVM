@@ -110,14 +110,4 @@ func (vm *VM) RunProgram() {
 			fmt.Println(err)
 		}
 	}
-
-	// for {
-	// 	vm.execNextInstruction(false)
-	// 	if err := vm.errcode; err != nil {
-	// 		if err != errProgramFinished {
-	// 			fmt.Println(err)
-	// 		}
-	// 		break
-	// 	}
-	// }
 }
