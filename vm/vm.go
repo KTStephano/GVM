@@ -225,8 +225,10 @@ func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
 func formatInstructionStr(vm *VM, pc register, prefix string) string {
 	if pc < register(len(vm.program)) {
 		if vm.debugSym != nil {
+			// Use debug symbols to print source as it was when first read in
 			return fmt.Sprintf(prefix+" %d: %s", pc, vm.debugSym.source[int(pc)])
 		} else {
+			// Use instruction -> string conversion since we don't have debug symbols
 			return fmt.Sprintf(prefix+" %d: %s", pc, vm.program[pc])
 		}
 	}
