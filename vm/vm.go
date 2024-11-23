@@ -430,14 +430,29 @@ func logicalAnd(x, y []byte) {
 	uint32ToBytes(uint32FromBytes(x)&uint32FromBytes(y), y)
 }
 
+func logicalAndFast(vm *VM, y uint32) {
+	x := vm.peekStack()
+	uint32ToBytes(uint32FromBytes(x)&y, x)
+}
+
 func logicalOr(x, y []byte) {
 	// Overwrite y with result
 	uint32ToBytes(uint32FromBytes(x)|uint32FromBytes(y), y)
 }
 
+func logicalOrFast(vm *VM, y uint32) {
+	x := vm.peekStack()
+	uint32ToBytes(uint32FromBytes(x)|y, x)
+}
+
 func logicalXor(x, y []byte) {
 	// Overwrite y with result
 	uint32ToBytes(uint32FromBytes(x)^uint32FromBytes(y), y)
+}
+
+func logicalXorFast(vm *VM, y uint32) {
+	x := vm.peekStack()
+	uint32ToBytes(uint32FromBytes(x)^y, x)
 }
 
 // Returns value (bytes) for the push/pop instructions. If data > 0
@@ -615,17 +630,29 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// Invert all bits, store result in arg
 			uint32ToBytes(^uint32FromBytes(arg), arg)
 		case And:
-			arg0Bytes, arg1Bytes := vm.popPeekStack()
-			// Overwrites arg1Bytes with result of op
-			logicalAnd(arg0Bytes, arg1Bytes)
+			if data == 0 {
+				arg0Bytes, arg1Bytes := vm.popPeekStack()
+				// Overwrites arg1Bytes with result of op
+				logicalAnd(arg0Bytes, arg1Bytes)
+			} else {
+				logicalAndFast(vm, oparg)
+			}
 		case Or:
-			arg0Bytes, arg1Bytes := vm.popPeekStack()
-			// Overwrites arg1Bytes with result of op
-			logicalOr(arg0Bytes, arg1Bytes)
+			if data == 0 {
+				arg0Bytes, arg1Bytes := vm.popPeekStack()
+				// Overwrites arg1Bytes with result of op
+				logicalOr(arg0Bytes, arg1Bytes)
+			} else {
+				logicalOrFast(vm, oparg)
+			}
 		case Xor:
-			arg0Bytes, arg1Bytes := vm.popPeekStack()
-			// Overwrites arg1Bytes with result of op
-			logicalXor(arg0Bytes, arg1Bytes)
+			if data == 0 {
+				arg0Bytes, arg1Bytes := vm.popPeekStack()
+				// Overwrites arg1Bytes with result of op
+				logicalXor(arg0Bytes, arg1Bytes)
+			} else {
+				logicalXorFast(vm, oparg)
+			}
 		case Jmp:
 			addr := oparg
 			if data == 0 {
