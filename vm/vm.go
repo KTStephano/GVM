@@ -495,14 +495,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 		case Load:
 			vm.pushStack(vm.registers[oparg])
 		case Store:
-			if oparg < 2 {
-				// not allowed to write to program counter or stack pointer
-				vm.errcode = errIllegalOperation
-				return
-			}
-
-			regValue := uint32FromBytes(vm.popStack())
-			vm.registers[oparg] = register(regValue)
+			fallthrough
 		case Kstore:
 			if oparg < 2 {
 				// not allowed to write to program counter or stack pointer
@@ -512,6 +505,11 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 			regValue := uint32FromBytes(vm.peekStack())
 			vm.registers[oparg] = register(regValue)
+
+			if code == Store {
+				// In the case of store, modify stack pointer
+				*vm.sp += varchBytes
+			}
 		case Loadp8:
 			addrBytes := vm.peekStack()
 			addr := uint32FromBytes(addrBytes)

@@ -71,8 +71,11 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][2]st
 		labels[r] = fmt.Sprintf("%d", len(lines))
 		if debugSym != nil {
 			debugSym[len(lines)] = label
+			// For debug symbols we add a nop so that we can preserve this line in the code
+			return append(lines, [2]string{"nop", ""}), nil
+		} else {
+			return lines, nil
 		}
-		return append(lines, [2]string{"nop", ""}), nil
 	} else {
 		split := strings.Split(line, " ")
 		code := split[0]
