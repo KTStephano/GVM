@@ -13,7 +13,6 @@ writechar:
     loadp8                      // *stack[0] (dereference)
     writec                      // write 32 bit character
     load 2
-    const 1
-    addi
+    addi 1
     store 2                     // addi register[2] 1, store in register[2]
     jmp loop
