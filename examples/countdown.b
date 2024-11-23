@@ -2,9 +2,8 @@
     store 2      // Store 9 in register[2]
 
 loop:
-    const '0'
     load 2
-    addi        // Add register[2] to '0' character to get number as character
+    addi '0'        // Add register[2] to '0' character to get number as character
     writec
     const 1
     load 2
