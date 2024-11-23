@@ -355,16 +355,6 @@ func arithAddf(x, y []byte) {
 	float32ToBytes(float32FromBytes(x)+float32FromBytes(y), y)
 }
 
-func arithAddiFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	uint32ToBytes(uint32FromBytes(x)+y, x)
-}
-
-func arithAddfFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	float32ToBytes(float32FromBytes(x)+math.Float32frombits(y), x)
-}
-
 func arithSubi(x, y []byte) {
 	// Overwrite y with result
 	uint32ToBytes(uint32FromBytes(x)-uint32FromBytes(y), y)
@@ -373,16 +363,6 @@ func arithSubi(x, y []byte) {
 func arithSubf(x, y []byte) {
 	// Overwrite y with result
 	float32ToBytes(float32FromBytes(x)-float32FromBytes(y), y)
-}
-
-func arithSubiFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	uint32ToBytes(uint32FromBytes(x)-y, x)
-}
-
-func arithSubfFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	float32ToBytes(float32FromBytes(x)-math.Float32frombits(y), x)
 }
 
 func arithMuli(x, y []byte) {
@@ -395,16 +375,6 @@ func arithMulf(x, y []byte) {
 	float32ToBytes(float32FromBytes(x)*float32FromBytes(y), y)
 }
 
-func arithMuliFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	uint32ToBytes(uint32FromBytes(x)*y, x)
-}
-
-func arithMulfFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	float32ToBytes(float32FromBytes(x)*math.Float32frombits(y), x)
-}
-
 func arithDivi(x, y []byte) {
 	// Overwrite y with result
 	uint32ToBytes(uint32FromBytes(x)/uint32FromBytes(y), y)
@@ -413,16 +383,6 @@ func arithDivi(x, y []byte) {
 func arithDivf(x, y []byte) {
 	// Overwrite y with result
 	float32ToBytes(float32FromBytes(x)/float32FromBytes(y), y)
-}
-
-func arithDiviFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	uint32ToBytes(uint32FromBytes(x)/y, x)
-}
-
-func arithDivfFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	float32ToBytes(float32FromBytes(x)/math.Float32frombits(y), x)
 }
 
 func logicalAnd(x, y []byte) {
@@ -562,69 +522,37 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
 		case Addi:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithAddi(arg0Bytes, arg1Bytes)
-			} else {
-				arithAddiFast(vm, oparg)
-			}
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithAddi(arg0Bytes, arg1Bytes)
 		case Addf:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithAddf(arg0Bytes, arg1Bytes)
-			} else {
-				arithAddfFast(vm, oparg)
-			}
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithAddf(arg0Bytes, arg1Bytes)
 		case Subi:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithSubi(arg0Bytes, arg1Bytes)
-			} else {
-				arithSubiFast(vm, oparg)
-			}
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithSubi(arg0Bytes, arg1Bytes)
 		case Subf:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithSubf(arg0Bytes, arg1Bytes)
-			} else {
-				arithSubfFast(vm, oparg)
-			}
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithSubf(arg0Bytes, arg1Bytes)
 		case Muli:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithMuli(arg0Bytes, arg1Bytes)
-			} else {
-				arithMuliFast(vm, oparg)
-			}
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithMuli(arg0Bytes, arg1Bytes)
 		case Mulf:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithMulf(arg0Bytes, arg1Bytes)
-			} else {
-				arithMulfFast(vm, oparg)
-			}
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithMulf(arg0Bytes, arg1Bytes)
 		case Divi:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithDivi(arg0Bytes, arg1Bytes)
-			} else {
-				arithDiviFast(vm, oparg)
-			}
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithDivi(arg0Bytes, arg1Bytes)
 		case Divf:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithDivf(arg0Bytes, arg1Bytes)
-			} else {
-				arithDivfFast(vm, oparg)
-			}
+			arg0Bytes, arg1Bytes := vm.popPeekStack()
+			// Overwrites arg1Bytes with result of op
+			arithDivf(arg0Bytes, arg1Bytes)
 		case Not:
 			arg := vm.peekStack()
 			// Invert all bits, store result in arg

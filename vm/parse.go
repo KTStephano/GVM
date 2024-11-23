@@ -133,7 +133,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 	strArg := line[1]
 	if strArg != "" {
 		if !code.RequiresOpArg() && !code.OptionalOpArg() {
-			return Instruction{}, fmt.Errorf("%s does not require an op argument", code.String())
+			return Instruction{}, fmt.Errorf("%s does not allow an op argument", code.String())
 		}
 
 		// Character - replace with number
