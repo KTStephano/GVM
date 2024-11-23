@@ -129,7 +129,8 @@ func (b Bytecode) RequiresOpArg() bool {
 // True if the bytecode can optionally accept an argument instead of
 // always inspecting the stack
 func (b Bytecode) OptionalOpArg() bool {
-	return b == And || b == Or || b == Xor ||
+	return b == Addi || b == Addf || b == Muli || b == Mulf ||
+		b == And || b == Or || b == Xor ||
 		b == Push || b == Pop ||
 		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg
 }

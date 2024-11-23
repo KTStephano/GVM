@@ -41,12 +41,17 @@ import (
 			push (reserve bytes on the stack, advances stack pointer)
 			pop  (free bytes back to the stack, retracts stack pointer)
 
+		addi, addf, muli and mulf all accept an optional argument. This is a fast path that will perform stack[0] <op> arg. The reason
+		the same isn't present for sub or div is because they're not commutative.
+
 			addi, addf (int and float add)
 			subi, subf (int and float sub)
 			muli, mulf (int and float mul)
 			divi, divf (int and float div)
 
-		And, or, xor all take an optional argument. This is a fast path that will perform stack[0] logicalop arg
+		and, or, xor all take an optional argument. This is a fast path that will perform stack[0] <op> arg and then overwrite
+		the stack value with the result.
+
 			not (inverts all bits of stack[0])
 			and (logical AND between stack[0] and stack[1])
 			or  (logical OR between stack[0] and stack[1])
@@ -356,6 +361,16 @@ func arithAddf(x, y []byte) {
 	float32ToBytes(float32FromBytes(x)+float32FromBytes(y), y)
 }
 
+func arithAddiFast(vm *VM, y uint32) {
+	x := vm.peekStack()
+	uint32ToBytes(uint32FromBytes(x)+y, x)
+}
+
+func arithAddfFast(vm *VM, y uint32) {
+	x := vm.peekStack()
+	float32ToBytes(float32FromBytes(x)+math.Float32frombits(y), x)
+}
+
 func arithSubi(x, y []byte) {
 	// Overwrite y with result
 	uint32ToBytes(uint32FromBytes(x)-uint32FromBytes(y), y)
@@ -374,6 +389,16 @@ func arithMuli(x, y []byte) {
 func arithMulf(x, y []byte) {
 	// Overwrite y with result
 	float32ToBytes(float32FromBytes(x)*float32FromBytes(y), y)
+}
+
+func arithMuliFast(vm *VM, y uint32) {
+	x := vm.peekStack()
+	uint32ToBytes(uint32FromBytes(x)*y, x)
+}
+
+func arithMulfFast(vm *VM, y uint32) {
+	x := vm.peekStack()
+	float32ToBytes(float32FromBytes(x)*math.Float32frombits(y), x)
 }
 
 func arithDivi(x, y []byte) {
@@ -523,13 +548,21 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
 		case Addi:
-			arg0Bytes, arg1Bytes := vm.popPeekStack()
-			// Overwrites arg1Bytes with result of op
-			arithAddi(arg0Bytes, arg1Bytes)
+			if data == 0 {
+				arg0Bytes, arg1Bytes := vm.popPeekStack()
+				// Overwrites arg1Bytes with result of op
+				arithAddi(arg0Bytes, arg1Bytes)
+			} else {
+				arithAddiFast(vm, oparg)
+			}
 		case Addf:
-			arg0Bytes, arg1Bytes := vm.popPeekStack()
-			// Overwrites arg1Bytes with result of op
-			arithAddf(arg0Bytes, arg1Bytes)
+			if data == 0 {
+				arg0Bytes, arg1Bytes := vm.popPeekStack()
+				// Overwrites arg1Bytes with result of op
+				arithAddf(arg0Bytes, arg1Bytes)
+			} else {
+				arithAddfFast(vm, oparg)
+			}
 		case Subi:
 			arg0Bytes, arg1Bytes := vm.popPeekStack()
 			// Overwrites arg1Bytes with result of op
@@ -539,13 +572,21 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// Overwrites arg1Bytes with result of op
 			arithSubf(arg0Bytes, arg1Bytes)
 		case Muli:
-			arg0Bytes, arg1Bytes := vm.popPeekStack()
-			// Overwrites arg1Bytes with result of op
-			arithMuli(arg0Bytes, arg1Bytes)
+			if data == 0 {
+				arg0Bytes, arg1Bytes := vm.popPeekStack()
+				// Overwrites arg1Bytes with result of op
+				arithMuli(arg0Bytes, arg1Bytes)
+			} else {
+				arithMuliFast(vm, oparg)
+			}
 		case Mulf:
-			arg0Bytes, arg1Bytes := vm.popPeekStack()
-			// Overwrites arg1Bytes with result of op
-			arithMulf(arg0Bytes, arg1Bytes)
+			if data == 0 {
+				arg0Bytes, arg1Bytes := vm.popPeekStack()
+				// Overwrites arg1Bytes with result of op
+				arithMulf(arg0Bytes, arg1Bytes)
+			} else {
+				arithMulfFast(vm, oparg)
+			}
 		case Divi:
 			arg0Bytes, arg1Bytes := vm.popPeekStack()
 			// Overwrites arg1Bytes with result of op
