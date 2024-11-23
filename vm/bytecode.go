@@ -43,9 +43,11 @@ const (
 	Cmpu     Bytecode = 0x21
 	Cmps     Bytecode = 0x22
 	Cmpf     Bytecode = 0x23
-	Writec   Bytecode = 0x24
-	Readc    Bytecode = 0x25
-	Exit     Bytecode = 0x26
+	Writeb   Bytecode = 0x24
+	Writec   Bytecode = 0x25
+	Flush    Bytecode = 0x26
+	Readc    Bytecode = 0x27
+	Exit     Bytecode = 0x28
 )
 
 type Instruction struct {
@@ -92,7 +94,9 @@ var (
 		"cmpu":     Cmpu,
 		"cmps":     Cmps,
 		"cmpf":     Cmpf,
+		"writeb":   Writeb,
 		"writec":   Writec,
+		"flush":    Flush,
 		"readc":    Readc,
 		"exit":     Exit,
 	}

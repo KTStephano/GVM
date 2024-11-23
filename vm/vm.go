@@ -82,7 +82,9 @@ import (
 			cmps
 			cmpf
 
-			writec (writes 1 32-bit value to stdout from stack[0])
+			writeb (writes 1 8-bit value to stdout buffer from address stored at stack[0])
+			writec (writes 1 32-bit value to stdout buffer from stack[0])
+			flush  (flushes stdout buffer to console)
 			readc  (reads 1 character from stdin - pushes to stack as 32-bit value)
 
 			exit (stops the program)
@@ -679,9 +681,13 @@ func (vm *VM) execInstructions(singleStep bool) {
 			x, y := vm.popPeekStack()
 			// Overwrite y bytes with result of compare
 			uint32ToBytes(compare(float32FromBytes(x), float32FromBytes(y)), y)
+		case Writeb:
+			addr := uint32FromBytes(vm.popStack())
+			vm.stdout.WriteByte(vm.stack[addr])
 		case Writec:
 			character := rune(uint32FromBytes(vm.popStack()))
-			vm.stdout.WriteString(string(character))
+			vm.stdout.WriteRune(character)
+		case Flush:
 			vm.stdout.Flush()
 		case Readc:
 			character, _, err := vm.stdin.ReadRune()
