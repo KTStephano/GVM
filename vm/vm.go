@@ -42,13 +42,19 @@ import (
 			push (reserve bytes on the stack, advances stack pointer)
 			pop  (free bytes back to the stack, retracts stack pointer)
 
-		all arithmetic instructions accept an optional argument. This is a fast path that will perform stack[0] <op> arg and overwrite
+		All arithmetic instructions accept an optional argument. This is a fast path that will perform stack[0] <op> arg and overwrite
 		the current stack value with the result.
 
 			addi, addf (int and float add)
 			subi, subf (int and float sub)
 			muli, mulf (int and float mul)
 			divi, divf (int and float div)
+
+		The remainder functions work the same as % in languages such as C. It returns the remainder after dividing stack[0] and stack[1].
+		There is a fast path for these as well that performs remainder stack[0] arg.
+
+			remu, rems (unsigned and signed remainder after integer division)
+			remf	   (remainder after floating point division)
 
 		and, or, xor instructions all take an optional argument. This is a fast path that will perform stack[0] <op> arg and then overwrite
 		the current stack value with the result.
@@ -138,9 +144,13 @@ type VM struct {
 	debugSym *debugSymbols
 }
 
+type integer32 interface {
+	int32 | uint32
+}
+
 // Constrains to types we can freely interpret their 32 bit pattern
 type numeric32 interface {
-	int32 | uint32 | float32
+	integer32 | float32
 }
 
 const (
@@ -434,22 +444,54 @@ func arithDivf(x, y []byte) {
 	float32ToBytes(float32FromBytes(x)/float32FromBytes(y), y)
 }
 
-func arithDiviFast(vm *VM, y uint32) error {
+func arithDiviFast(vm *VM, y uint32) {
 	// For ints we need to check for div by 0
 	// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
 	// and its discussion
 	if y == 0 {
-		return errDivisionByZero
+		vm.errcode = errDivisionByZero
 	}
 
 	x := vm.peekStack()
 	uint32ToBytes(uint32FromBytes(x)/y, x)
-	return nil
 }
 
 func arithDivfFast(vm *VM, y uint32) {
 	x := vm.peekStack()
 	float32ToBytes(float32FromBytes(x)/math.Float32frombits(y), x)
+}
+
+func getArithRemiVals(vm *VM, oparg, data uint32) (uint32, uint32, []byte) {
+	if data == 0 {
+		x, y := vm.popPeekStack()
+		// Overwrite y with result
+		return uint32FromBytes(x), uint32FromBytes(y), y
+	} else {
+		x := vm.peekStack()
+		// Overwrite x with result
+		return uint32FromBytes(x), oparg, x
+	}
+}
+
+func getArithRemfVals(vm *VM, oparg, data uint32) (float32, float32, []byte) {
+	if data == 0 {
+		x, y := vm.popPeekStack()
+		// Overwrite y with result
+		return float32FromBytes(x), float32FromBytes(y), y
+	} else {
+		x := vm.peekStack()
+		// Overwrite x with result
+		return float32FromBytes(x), math.Float32frombits(oparg), x
+	}
+}
+
+func arithRemi[T integer32](x, y T, bytes []byte) error {
+	if y == 0 {
+		return errDivisionByZero
+	}
+
+	uint32ToBytes(uint32(x%y), bytes)
+	return nil
 }
 
 func logicalAnd(x, y []byte) {
@@ -649,7 +691,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 				// Overwrites arg1Bytes with result of op
 				vm.errcode = arithDivi(arg0Bytes, arg1Bytes)
 			} else {
-				vm.errcode = arithDiviFast(vm, oparg)
+				arithDiviFast(vm, oparg)
 			}
 		case Divf:
 			if data == 0 {
@@ -659,6 +701,17 @@ func (vm *VM) execInstructions(singleStep bool) {
 			} else {
 				arithDivfFast(vm, oparg)
 			}
+		case Remu:
+			x, y, bytes := getArithRemiVals(vm, oparg, data)
+			vm.errcode = arithRemi(x, y, bytes)
+		case Rems:
+			x, y, bytes := getArithRemiVals(vm, oparg, data)
+			vm.errcode = arithRemi(int32(x), int32(y), bytes)
+		case Remf:
+			x, y, bytes := getArithRemfVals(vm, oparg, data)
+			// Go's math.Mod returns remainder after floating point division
+			rem := math.Mod(float64(x), float64(y))
+			float32ToBytes(float32(rem), bytes)
 		case Not:
 			arg := vm.peekStack()
 			// Invert all bits, store result in arg

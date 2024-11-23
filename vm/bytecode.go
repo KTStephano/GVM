@@ -7,47 +7,56 @@ import (
 type Bytecode byte
 
 const (
-	Nop      Bytecode = 0x00
-	Byte     Bytecode = 0x01
-	Const    Bytecode = 0x02
-	Load     Bytecode = 0x03
-	Store    Bytecode = 0x04
-	Kstore   Bytecode = 0x05
-	Loadp8   Bytecode = 0x06
-	Loadp16  Bytecode = 0x07
-	Loadp32  Bytecode = 0x08
-	Storep8  Bytecode = 0x09
-	Storep16 Bytecode = 0x0A
-	Storep32 Bytecode = 0x0B
-	Push     Bytecode = 0x0C
-	Pop      Bytecode = 0x0D
-	Addi     Bytecode = 0x0E
-	Addf     Bytecode = 0x0F
-	Subi     Bytecode = 0x10
-	Subf     Bytecode = 0x11
-	Muli     Bytecode = 0x12
-	Mulf     Bytecode = 0x13
-	Divi     Bytecode = 0x14
-	Divf     Bytecode = 0x15
-	Not      Bytecode = 0x16
-	And      Bytecode = 0x17
-	Or       Bytecode = 0x18
-	Xor      Bytecode = 0x19
-	Jmp      Bytecode = 0x1A
-	Jz       Bytecode = 0x1B
-	Jnz      Bytecode = 0x1C
-	Jle      Bytecode = 0x1D
-	Jl       Bytecode = 0x1E
-	Jge      Bytecode = 0x1F
-	Jg       Bytecode = 0x20
-	Cmpu     Bytecode = 0x21
-	Cmps     Bytecode = 0x22
-	Cmpf     Bytecode = 0x23
-	Writeb   Bytecode = 0x24
-	Writec   Bytecode = 0x25
-	Flush    Bytecode = 0x26
-	Readc    Bytecode = 0x27
-	Exit     Bytecode = 0x28
+	Nop Bytecode = 0x00
+
+	Byte   Bytecode = 0x01
+	Const  Bytecode = 0x02
+	Load   Bytecode = 0x03
+	Store  Bytecode = 0x04
+	Kstore Bytecode = 0x05
+
+	Loadp8   Bytecode = 0x10
+	Loadp16  Bytecode = 0x11
+	Loadp32  Bytecode = 0x12
+	Storep8  Bytecode = 0x13
+	Storep16 Bytecode = 0x14
+	Storep32 Bytecode = 0x15
+	Push     Bytecode = 0x16
+	Pop      Bytecode = 0x17
+
+	Addi Bytecode = 0x20
+	Addf Bytecode = 0x21
+	Subi Bytecode = 0x22
+	Subf Bytecode = 0x23
+	Muli Bytecode = 0x24
+	Mulf Bytecode = 0x25
+	Divi Bytecode = 0x26
+	Divf Bytecode = 0x27
+	Remu Bytecode = 0x28
+	Rems Bytecode = 0x29
+	Remf Bytecode = 0x2A
+
+	Not  Bytecode = 0x30
+	And  Bytecode = 0x31
+	Or   Bytecode = 0x32
+	Xor  Bytecode = 0x33
+	Jmp  Bytecode = 0x34
+	Jz   Bytecode = 0x35
+	Jnz  Bytecode = 0x36
+	Jle  Bytecode = 0x37
+	Jl   Bytecode = 0x38
+	Jge  Bytecode = 0x39
+	Jg   Bytecode = 0x3A
+	Cmpu Bytecode = 0x3B
+	Cmps Bytecode = 0x3C
+	Cmpf Bytecode = 0x3D
+
+	Writeb Bytecode = 0x40
+	Writec Bytecode = 0x41
+	Flush  Bytecode = 0x42
+	Readc  Bytecode = 0x43
+
+	Exit Bytecode = 0xFF
 )
 
 type Instruction struct {
@@ -80,6 +89,9 @@ var (
 		"mulf":     Mulf,
 		"divi":     Divi,
 		"divf":     Divf,
+		"remu":     Remu,
+		"rems":     Rems,
+		"remf":     Remf,
 		"not":      Not,
 		"and":      And,
 		"or":       Or,
@@ -136,6 +148,7 @@ func (b Bytecode) RequiresOpArg() bool {
 // always inspecting the stack
 func (b Bytecode) OptionalOpArg() bool {
 	return b == Addi || b == Addf || b == Subi || b == Subf || b == Muli || b == Mulf || b == Divi || b == Divf ||
+		b == Remu || b == Rems || b == Remf ||
 		b == And || b == Or || b == Xor ||
 		b == Push || b == Pop ||
 		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg
