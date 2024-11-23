@@ -46,6 +46,7 @@ import (
 			muli, mulf (int and float mul)
 			divi, divf (int and float div)
 
+		And, or, xor all take an optional argument. This is a fast path that will perform stack[0] logicalop arg
 			not (inverts all bits of stack[0])
 			and (logical AND between stack[0] and stack[1])
 			or  (logical OR between stack[0] and stack[1])
