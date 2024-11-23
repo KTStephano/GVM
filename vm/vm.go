@@ -42,16 +42,16 @@ import (
 			push (reserve bytes on the stack, advances stack pointer)
 			pop  (free bytes back to the stack, retracts stack pointer)
 
-		addi, addf, muli and mulf all accept an optional argument. This is a fast path that will perform stack[0] <op> arg. The reason
-		the same isn't present for sub or div is because they're not commutative.
+		all arithmetic instructions accept an optional argument. This is a fast path that will perform stack[0] <op> arg and overwrite
+		the current stack value with the result.
 
 			addi, addf (int and float add)
 			subi, subf (int and float sub)
 			muli, mulf (int and float mul)
 			divi, divf (int and float div)
 
-		and, or, xor all take an optional argument. This is a fast path that will perform stack[0] <op> arg and then overwrite
-		the stack value with the result.
+		and, or, xor instructions all take an optional argument. This is a fast path that will perform stack[0] <op> arg and then overwrite
+		the current stack value with the result.
 
 			not (inverts all bits of stack[0])
 			and (logical AND between stack[0] and stack[1])
@@ -123,7 +123,7 @@ type VM struct {
 	pc        *register // program counter
 	sp        *register // stack pointer
 
-	stack   [stackSize]byte
+	stack   [stackSize]byte // grows down (largest address towards smallest address)
 	program []Instruction
 
 	// Allows vm to read/write to some type of output
@@ -155,6 +155,7 @@ var (
 	errProgramFinished    = errors.New("ran out of instructions")
 	errSegmentationFault  = errors.New("segmentation fault")
 	errIllegalOperation   = errors.New("illegal operation at instruction")
+	errDivisionByZero     = errors.New("division by zero")
 	errUnknownInstruction = errors.New("instruction not recognized")
 	errIO                 = errors.New("input-output error")
 )
@@ -347,10 +348,10 @@ func (vm *VM) pushStack(value register) {
 func compare[T numeric32](x, y T) uint32 {
 	if x < y {
 		return math.MaxUint32 // -1 when converted to int32
-	} else if x == y {
-		return 0
-	} else {
+	} else if x > y {
 		return 1
+	} else {
+		return 0
 	}
 }
 
@@ -384,6 +385,16 @@ func arithSubf(x, y []byte) {
 	float32ToBytes(float32FromBytes(x)-float32FromBytes(y), y)
 }
 
+func arithSubiFast(vm *VM, y uint32) {
+	x := vm.peekStack()
+	uint32ToBytes(uint32FromBytes(x)-y, x)
+}
+
+func arithSubfFast(vm *VM, y uint32) {
+	x := vm.peekStack()
+	float32ToBytes(float32FromBytes(x)-math.Float32frombits(y), x)
+}
+
 func arithMuli(x, y []byte) {
 	// Overwrite y with result
 	uint32ToBytes(uint32FromBytes(x)*uint32FromBytes(y), y)
@@ -404,14 +415,41 @@ func arithMulfFast(vm *VM, y uint32) {
 	float32ToBytes(float32FromBytes(x)*math.Float32frombits(y), x)
 }
 
-func arithDivi(x, y []byte) {
+func arithDivi(x, y []byte) error {
+	yval := uint32FromBytes(y)
+	// For ints we need to check for div by 0
+	// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
+	// and its discussion
+	if yval == 0 {
+		return errDivisionByZero
+	}
+
 	// Overwrite y with result
-	uint32ToBytes(uint32FromBytes(x)/uint32FromBytes(y), y)
+	uint32ToBytes(uint32FromBytes(x)/yval, y)
+	return nil
 }
 
 func arithDivf(x, y []byte) {
 	// Overwrite y with result
 	float32ToBytes(float32FromBytes(x)/float32FromBytes(y), y)
+}
+
+func arithDiviFast(vm *VM, y uint32) error {
+	// For ints we need to check for div by 0
+	// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
+	// and its discussion
+	if y == 0 {
+		return errDivisionByZero
+	}
+
+	x := vm.peekStack()
+	uint32ToBytes(uint32FromBytes(x)/y, x)
+	return nil
+}
+
+func arithDivfFast(vm *VM, y uint32) {
+	x := vm.peekStack()
+	float32ToBytes(float32FromBytes(x)/math.Float32frombits(y), x)
 }
 
 func logicalAnd(x, y []byte) {
@@ -574,13 +612,21 @@ func (vm *VM) execInstructions(singleStep bool) {
 				arithAddfFast(vm, oparg)
 			}
 		case Subi:
-			arg0Bytes, arg1Bytes := vm.popPeekStack()
-			// Overwrites arg1Bytes with result of op
-			arithSubi(arg0Bytes, arg1Bytes)
+			if data == 0 {
+				arg0Bytes, arg1Bytes := vm.popPeekStack()
+				// Overwrites arg1Bytes with result of op
+				arithSubi(arg0Bytes, arg1Bytes)
+			} else {
+				arithSubiFast(vm, oparg)
+			}
 		case Subf:
-			arg0Bytes, arg1Bytes := vm.popPeekStack()
-			// Overwrites arg1Bytes with result of op
-			arithSubf(arg0Bytes, arg1Bytes)
+			if data == 0 {
+				arg0Bytes, arg1Bytes := vm.popPeekStack()
+				// Overwrites arg1Bytes with result of op
+				arithSubf(arg0Bytes, arg1Bytes)
+			} else {
+				arithSubfFast(vm, oparg)
+			}
 		case Muli:
 			if data == 0 {
 				arg0Bytes, arg1Bytes := vm.popPeekStack()
@@ -598,13 +644,21 @@ func (vm *VM) execInstructions(singleStep bool) {
 				arithMulfFast(vm, oparg)
 			}
 		case Divi:
-			arg0Bytes, arg1Bytes := vm.popPeekStack()
-			// Overwrites arg1Bytes with result of op
-			arithDivi(arg0Bytes, arg1Bytes)
+			if data == 0 {
+				arg0Bytes, arg1Bytes := vm.popPeekStack()
+				// Overwrites arg1Bytes with result of op
+				vm.errcode = arithDivi(arg0Bytes, arg1Bytes)
+			} else {
+				vm.errcode = arithDiviFast(vm, oparg)
+			}
 		case Divf:
-			arg0Bytes, arg1Bytes := vm.popPeekStack()
-			// Overwrites arg1Bytes with result of op
-			arithDivf(arg0Bytes, arg1Bytes)
+			if data == 0 {
+				arg0Bytes, arg1Bytes := vm.popPeekStack()
+				// Overwrites arg1Bytes with result of op
+				arithDivf(arg0Bytes, arg1Bytes)
+			} else {
+				arithDivfFast(vm, oparg)
+			}
 		case Not:
 			arg := vm.peekStack()
 			// Invert all bits, store result in arg
