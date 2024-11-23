@@ -25,11 +25,12 @@ import (
 	The stack is 64kb in size minimum
 
 	Possible bytecodes
-			nop   (no operation)
-			byte  (pushes byte value onto the stack)
-			const (pushes const value onto stack (can be a label))
-			load  (loads value of register)
-			store (stores value of stack[0] to register)
+			nop    (no operation)
+			byte   (pushes byte value onto the stack)
+			const  (pushes const value onto stack (can be a label))
+			load   (loads value of register)
+			store  (stores value of stack[0] to register)
+			kstore (stores value of stack[0] to register and keeps value on the stack)
 			loadp8, loadp16, loadp32 (loads 8, 16 or 32 bit value from address at stack[0], widens to 32 bits)
 				loadpX are essentially stack[0] = *stack[0]
 			storep8, storep16, storep32 (narrows stack[1] to 8, 16 or 32 bits and writes it to address at stack[0])
@@ -501,6 +502,15 @@ func (vm *VM) execInstructions(singleStep bool) {
 			}
 
 			regValue := uint32FromBytes(vm.popStack())
+			vm.registers[oparg] = register(regValue)
+		case Kstore:
+			if oparg < 2 {
+				// not allowed to write to program counter or stack pointer
+				vm.errcode = errIllegalOperation
+				return
+			}
+
+			regValue := uint32FromBytes(vm.peekStack())
 			vm.registers[oparg] = register(regValue)
 		case Loadp8:
 			addrBytes := vm.peekStack()
