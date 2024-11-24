@@ -164,8 +164,8 @@ func NewInstruction(numArgs byte, code Bytecode, byteArg byte, arg uint32, flags
 }
 
 func (instr Instruction) String() string {
-	code := Bytecode(instr.code)
-	numArgs := instr.flags & 0xff
+	code := Bytecode(instr.code & 0xff)
+	numArgs := (instr.code & 0xff00) >> 8
 	if numArgs > 0 {
 		intArg := int32(instr.arg)
 		intArgStr := ""
@@ -471,10 +471,25 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 
 	// Check for invalid register stores
 	for i, instr := range instructions {
-		code := Bytecode(instr.code)
+		code := Bytecode(instr.code & 0xff)
+		numArgs := (instr.code & 0xff00) >> 8
+		errVal := fmt.Errorf("illegal register write at %d: %s", i, instr)
 		if code == Store || code == Kstore {
 			if instr.arg < 2 {
-				return Program{}, fmt.Errorf("illegal register write at %d: %s %d", i, code, instr.arg)
+				return Program{}, errVal
+			}
+		} else if code == Raddi || code == Raddf ||
+			code == Rsubi || code == Rsubf ||
+			code == Rmuli || code == Rmulf ||
+			code == Rdivi || code == Rdivf {
+
+			regIdx := instr.arg
+			if numArgs > 1 {
+				regIdx = uint32(instr.byteArg)
+			}
+
+			if regIdx < 2 {
+				return Program{}, errVal
 			}
 		}
 	}

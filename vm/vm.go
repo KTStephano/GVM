@@ -134,14 +134,6 @@ func uint32FromBytes(bytes []byte) uint32 {
 	return binary.LittleEndian.Uint32(bytes)
 }
 
-func int32FromBytes(bytes []byte) int32 {
-	return int32(uint32FromBytes(bytes))
-}
-
-func float32FromBytes(bytes []byte) float32 {
-	return math.Float32frombits(uint32FromBytes(bytes))
-}
-
 // Converts uint32 to a sequence of 4 bytes encoded as little endian
 func uint32ToBytes(u uint32, bytes []byte) {
 	binary.LittleEndian.PutUint32(bytes, u)
@@ -234,28 +226,6 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 	}
 
 	return uint32(x % y), nil
-}
-
-// Returns value (bytes) for the push/pop instructions. If flags > 0
-// it will use oparg as the value, otherwise it will pop the bytes value
-// from the stack
-func getPushPopValue(vm *VM, oparg uint32, numArgs uint16) uint32 {
-	if numArgs == 0 {
-		return vm.popStackUint32()
-	} else {
-		return oparg
-	}
-}
-
-// Returns (addr, value) for the conditional jumps. If flags is > 0
-// it will use oparg as the address, otherwise it will pop the address
-// from the stack.
-func getJumpAddrValue(vm *VM, oparg uint32, numArgs uint16) (uint32, uint32) {
-	if numArgs == 0 {
-		return vm.popStackx2Uint32()
-	} else {
-		return oparg, vm.popStackUint32()
-	}
 }
 
 // This is considered a tight loop. It's ok to move certain things to instructions
