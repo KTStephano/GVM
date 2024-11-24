@@ -1,5 +1,135 @@
 package gvm
 
+/*
+	For each CPU core:
+			- little endian
+			- 32-bit virtual architecture
+			- 32 registers starting at index 0
+			- register 0 is the program counter
+			- register 1 is the stack pointer
+			- registers indexed 2 through 31 are general purpose, 32-bit
+			- supports single stepping through instructions
+			- supports setting program breakpoints
+
+	The stack is 64kb in size minimum
+
+	This bytecode instruction set attempts to strike a balance between the extreme simplicity
+	of a stack-based design and the increased complexity but better performance (at least for interpreter VMs) of
+	a register-based design. Almost all instructions revolve around the stack, but there are some additions
+	to reduce the number of instructions required in some situations. For example:
+		load 2
+		const 1
+		addi
+		store 2
+
+	can become
+		load 2
+		addi 1
+		store 2
+
+	where the const instruction is removed in favor of inlining the argument with addi.
+
+	See https://static.usenix.org/events/vee05/full_papers/p153-yunhe.pdf
+	for a look at virtual register vs virtual stack designs for interpreter VMs.
+
+	Current bytecodes (<> means required, [] means optional)
+			nop    (no operation)
+			byte   <arg> (pushes byte value onto the stack)
+			const  <arg> (pushes const value onto stack (can be a label))
+			load   <arg> (loads value of register)
+			store  <arg> (stores value of stack[0] to register)
+			kstore <arg> (stores value of stack[0] to register and keeps value on the stack)
+			loadp8, loadp16, loadp32 (loads 8, 16 or 32 bit value from address at stack[0], widens to 32 bits)
+				loadpX are essentially stack[0] = *stack[0]
+			storep8, storep16, storep32 (narrows stack[1] to 8, 16 or 32 bits and writes it to address at stack[0])
+				storepX are essentially *stack[0] = stack[1]
+
+		The push/pop instructions accept an optional argument. This argument is the number of bytes to push to or pop from the stack.
+		If no argument is specified, stack[0] should hold the bytes argument.
+
+			push [arg] (reserve bytes on the stack, advances stack pointer)
+			pop  [arg] (free bytes back to the stack, retracts stack pointer)
+
+		All arithmetic instructions accept an optional argument. This is a fast path that will perform stack[0] <op> arg and overwrite
+		the current stack value with the result.
+
+			addi, addf [arg] (int and float add)
+			subi, subf [arg] (int and float sub)
+			muli, mulf [arg] (int and float mul)
+			divi, divf [arg] (int and float div)
+
+		The remainder functions work the same as % in languages such as C. It returns the remainder after dividing stack[0] and stack[1].
+		There is a fast path for these as well that performs remainder stack[0] arg.
+
+			remu, rems [arg] (unsigned and signed remainder after integer division)
+			remf	   [arg] (remainder after floating point division)
+
+		and, or, xor instructions all take an optional argument. This is a fast path that will perform stack[0] <op> arg and then overwrite
+		the current stack value with the result.
+
+			not (inverts all bits of stack[0])
+			and (logical AND between stack[0] and stack[1])
+			or  (logical OR between stack[0] and stack[1])
+			xor (logical XOR between stack[0] and stack[1])
+
+		Each of the jump instructions accept an optional argument. If no argument is specified, stack[0] is where
+		they check for their jump address. Otherwise the argument is treated as the jump address.
+
+		Example: jnz addr (jump to addr if stack[0] is not 0)
+				 jnz	  (jump to stack[0] if stack[1] is not 0)
+
+			jmp  (unconditional jump to address at stack[0])
+			jz   (jump to address at stack[0] if stack[1] is 0)
+			jnz  (jump to address at stack[0] if stack[1] is not 0)
+			jle  (jump to address at stack[0] if stack[1] less than or equal to 0)
+			jl   (jump to address at stack[0] if stack[1] less than 0)
+			jge  (jump to address at stack[0] if stack[1] greater than or equal to 0)
+			jg   (jump to address at stack[0] if stack[1] greater than 0)
+
+		The r* style of instructions accept a register as their first argument. If no second argument is given,
+		it performs registers[arg0] += stack[0] and overwrites the top stack value with the result. Otherwise it
+		will perform registers[arg0] += arg1 and push the result to the stack. In both cases not only does the stack
+		store the result, but the register is updated as well.
+
+			raddi, raddf <register> [constant]
+			rsubi, rsubf <register> [constant]
+			rmuli, rmulf <register> [constant]
+			rdivi, rdivf <register> [constant]
+
+		The following all do: (compare stack[0] to stack[1]: negative if stack[0] < stack[1], 0 if stack[0] == stack[1], positive if stack[0] > stack[1])
+		However, the naming scheme is as follows:
+				cmpu -> treats both inputs as unsigned 32-bit
+				cmps -> treats both inputs as signed 32-bit
+				cmpf -> treats both inputs as float 32-bit
+
+			cmpu
+			cmps
+			cmpf
+
+			writeb (writes 1 8-bit value to stdout buffer from address stored at stack[0])
+			writec (writes 1 32-bit value to stdout buffer from stack[0])
+			flush  (flushes stdout buffer to console)
+			readc  (reads 1 character from stdin - pushes to stack as 32-bit value)
+
+			exit (stops the program)
+
+	Examples:
+			const 3 // stack: [3]
+			const 5 // stack: [5, 3]
+			addi    // stack: [8]
+
+			const 2 // stack: [2, 8]
+			store	// stack: [],      register 2: 8
+
+			const 2 // stack: [2],     register 2: 8
+			load	// stack: [8],     register 2: 8
+			const 4 // stack: [4, 8],  register 2: 8
+			addi 	// stack: [12],	   register 2: 8
+
+			const 2 // stack: [2, 12], register 2: 8
+			store	// stack: [], 	   register 2: 12
+*/
+
 type Bytecode byte
 
 const (
@@ -32,25 +162,37 @@ const (
 	Rems Bytecode = 0x29
 	Remf Bytecode = 0x2A
 
-	Not  Bytecode = 0x30
-	And  Bytecode = 0x31
-	Or   Bytecode = 0x32
-	Xor  Bytecode = 0x33
-	Jmp  Bytecode = 0x34
-	Jz   Bytecode = 0x35
-	Jnz  Bytecode = 0x36
-	Jle  Bytecode = 0x37
-	Jl   Bytecode = 0x38
-	Jge  Bytecode = 0x39
-	Jg   Bytecode = 0x3A
-	Cmpu Bytecode = 0x3B
-	Cmps Bytecode = 0x3C
-	Cmpf Bytecode = 0x3D
+	Not    Bytecode = 0x30
+	And    Bytecode = 0x31
+	Or     Bytecode = 0x32
+	Xor    Bytecode = 0x33
+	Shiftr Bytecode = 0x34
+	Shiftl Bytecode = 0x35
 
-	Writeb Bytecode = 0x40
-	Writec Bytecode = 0x41
-	Flush  Bytecode = 0x42
-	Readc  Bytecode = 0x43
+	Jmp  Bytecode = 0x40
+	Jz   Bytecode = 0x41
+	Jnz  Bytecode = 0x42
+	Jle  Bytecode = 0x43
+	Jl   Bytecode = 0x44
+	Jge  Bytecode = 0x45
+	Jg   Bytecode = 0x46
+	Cmpu Bytecode = 0x47
+	Cmps Bytecode = 0x48
+	Cmpf Bytecode = 0x49
+
+	Writeb Bytecode = 0x50
+	Writec Bytecode = 0x51
+	Flush  Bytecode = 0x52
+	Readc  Bytecode = 0x53
+
+	Raddi Bytecode = 0x60
+	Raddf Bytecode = 0x61
+	Rsubi Bytecode = 0x62
+	Rsubf Bytecode = 0x63
+	Rmuli Bytecode = 0x64
+	Rmulf Bytecode = 0x65
+	Rdivi Bytecode = 0x66
+	Rdivf Bytecode = 0x67
 
 	Exit Bytecode = 0xFF
 )
@@ -101,6 +243,7 @@ var (
 		"writec":   Writec,
 		"flush":    Flush,
 		"readc":    Readc,
+		"raddi":    Raddi,
 		"exit":     Exit,
 	}
 
@@ -120,7 +263,8 @@ func (b Bytecode) String() string {
 // True if the bytecode requires an argument to be paired
 // with it, such as const X
 func (b Bytecode) NumRequiredOpArgs() int {
-	if b == Const || b == Byte || b == Load || b == Store || b == Kstore {
+	if b == Const || b == Byte || b == Load || b == Store || b == Kstore ||
+		b == Raddi || b == Raddf || b == Rsubi || b == Rsubf || b == Rmuli || b == Rmulf || b == Rdivi || b == Rdivf {
 		return 1
 	} else {
 		return 0
@@ -134,7 +278,9 @@ func (b Bytecode) NumOptionalOpArgs() int {
 		b == Remu || b == Rems || b == Remf ||
 		b == And || b == Or || b == Xor ||
 		b == Push || b == Pop ||
-		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg {
+		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg ||
+		b == Raddi || b == Raddf || b == Rsubi || b == Rsubf || b == Rmuli || b == Rmulf || b == Rdivi || b == Rdivf ||
+		b == Shiftl || b == Shiftr {
 		return 1
 	} else {
 		return 0
@@ -143,14 +289,6 @@ func (b Bytecode) NumOptionalOpArgs() int {
 
 // This is called when package is first loaded (before main)
 func init() {
-	// Some kind of check like this will probably be needed if we eventually decide
-	// to serialize instructions to file
-	//
-	// var instr Instruction
-	// if unsafe.Sizeof(instr) != 8 {
-	// 	panic("Instruction struct size not equal to 8")
-	// }
-
 	// Build instruction -> string map using the existing string -> instruction map
 	instrToStrMap = make(map[Bytecode]string, len(strToInstrMap))
 	for s, b := range strToInstrMap {

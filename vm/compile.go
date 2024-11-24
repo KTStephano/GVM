@@ -13,11 +13,12 @@ import (
 )
 
 type Instruction struct {
-	code Bytecode
+	// Code embeds upper 8 bits as number of op args, lower 8 bits as bytecode instruction
+	code uint16
 	// Can be used in the case where bytecode should accept 2 args - one should fit
 	// into a byte and the other can use a full 32 bits
 	byteArg byte
-	flags   uint16
+	flags   byte
 	arg     uint32
 }
 
@@ -25,6 +26,114 @@ type Program struct {
 	instructions []Instruction
 	debugSymMap  map[int]string
 }
+
+const (
+	nopNoArgs uint16 = uint16(Nop)
+
+	byteOneArg   uint16 = 0x0100 | uint16(Byte)
+	constOneArg  uint16 = 0x0100 | uint16(Const)
+	loadOneArg   uint16 = 0x0100 | uint16(Load)
+	storeOneArg  uint16 = 0x0100 | uint16(Store)
+	kstoreOneArg uint16 = 0x0100 | uint16(Kstore)
+
+	loadp8NoArgs   uint16 = uint16(Loadp8)
+	loadp16NoArgs  uint16 = uint16(Loadp16)
+	loadp32NoArgs  uint16 = uint16(Loadp32)
+	storep8NoArgs  uint16 = uint16(Storep8)
+	storep16NoArgs uint16 = uint16(Storep16)
+	storep32NoArgs uint16 = uint16(Storep32)
+
+	pushNoArgs uint16 = uint16(Push)
+	pushOneArg uint16 = 0x0100 | uint16(Push)
+	popNoArgs  uint16 = uint16(Pop)
+	popOneArg  uint16 = 0x0100 | uint16(Pop)
+
+	addiNoArgs uint16 = uint16(Addi)
+	addiOneArg uint16 = 0x0100 | uint16(Addi)
+	addfNoArgs uint16 = uint16(Addf)
+	addfOneArg uint16 = 0x0100 | uint16(Addf)
+
+	subiNoArgs uint16 = uint16(Subi)
+	subiOneArg uint16 = 0x0100 | uint16(Subi)
+	subfNoArgs uint16 = uint16(Subf)
+	subfOneArg uint16 = 0x0100 | uint16(Subf)
+
+	muliNoArgs uint16 = uint16(Muli)
+	muliOneArg uint16 = 0x0100 | uint16(Muli)
+	mulfNoArgs uint16 = uint16(Mulf)
+	mulfOneArg uint16 = 0x0100 | uint16(Mulf)
+
+	diviNoArgs uint16 = uint16(Divi)
+	diviOneArg uint16 = 0x0100 | uint16(Divi)
+	divfNoArgs uint16 = uint16(Divf)
+	divfOneArg uint16 = 0x0100 | uint16(Divf)
+
+	remuNoArgs uint16 = uint16(Remu)
+	remuOneArg uint16 = 0x0100 | uint16(Remu)
+	remsNoArgs uint16 = uint16(Rems)
+	remsOneArg uint16 = 0x0100 | uint16(Rems)
+	remfNoArgs uint16 = uint16(Remf)
+	remfOneArg uint16 = 0x0100 | uint16(Remf)
+
+	notNoArgs uint16 = uint16(Not)
+	andNoArgs uint16 = uint16(And)
+	andOneArg uint16 = 0x0100 | uint16(And)
+	orNoArgs  uint16 = uint16(Or)
+	orOneArg  uint16 = 0x0100 | uint16(Or)
+	xorNoArgs uint16 = uint16(Xor)
+	xorOneArg uint16 = 0x0100 | uint16(Xor)
+
+	shiftRNoArgs uint16 = uint16(Shiftr)
+	shiftROneArg uint16 = 0x0100 | uint16(Shiftr)
+	shiftLNoArgs uint16 = uint16(Shiftl)
+	shiftLOneArg uint16 = 0x0100 | uint16(Shiftl)
+
+	jmpNoArgs uint16 = uint16(Jmp)
+	jmpOneArg uint16 = 0x0100 | uint16(Jmp)
+	jzNoArgs  uint16 = uint16(Jz)
+	jzOneArg  uint16 = 0x0100 | uint16(Jz)
+	jnzNoArgs uint16 = uint16(Jnz)
+	jnzOneArg uint16 = 0x0100 | uint16(Jnz)
+	jleNoArgs uint16 = uint16(Jle)
+	jleOneArg uint16 = 0x0100 | uint16(Jle)
+	jlNoArgs  uint16 = uint16(Jl)
+	jlOneArg  uint16 = 0x0100 | uint16(Jl)
+	jgeNoArgs uint16 = uint16(Jge)
+	jgeOneArg uint16 = 0x0100 | uint16(Jge)
+	jgNoArgs  uint16 = uint16(Jg)
+	jgOneArg  uint16 = 0x0100 | uint16(Jg)
+
+	cmpuNoArgs uint16 = uint16(Cmpu)
+	cmpsNoArgs uint16 = uint16(Cmps)
+	cmpfNoArgs uint16 = uint16(Cmpf)
+
+	writebNoArgs uint16 = uint16(Writeb)
+	writecNoArgs uint16 = uint16(Writec)
+	flushNoArgs  uint16 = uint16(Flush)
+	readcNoArgs  uint16 = uint16(Readc)
+
+	raddiOneArg  uint16 = 0x0100 | uint16(Raddi)
+	raddiTwoArgs uint16 = 0x0200 | uint16(Raddi)
+	raddfOneArg  uint16 = 0x0100 | uint16(Raddf)
+	raddfTwoArgs uint16 = 0x0200 | uint16(Raddf)
+
+	rsubiOneArg  uint16 = 0x0100 | uint16(Rsubi)
+	rsubiTwoArgs uint16 = 0x0200 | uint16(Rsubi)
+	rsubfOneArg  uint16 = 0x0100 | uint16(Rsubf)
+	rsubfTwoArgs uint16 = 0x0200 | uint16(Rsubf)
+
+	rmuliOneArg  uint16 = 0x0100 | uint16(Rmuli)
+	rmuliTwoArgs uint16 = 0x0200 | uint16(Rmuli)
+	rmulfOneArg  uint16 = 0x0100 | uint16(Rmulf)
+	rmulfTwoArgs uint16 = 0x0200 | uint16(Rmulf)
+
+	rdiviOneArg  uint16 = 0x0100 | uint16(Rdivi)
+	rdiviTwoArgs uint16 = 0x0200 | uint16(Rdivi)
+	rdivfOneArg  uint16 = 0x0100 | uint16(Rdivf)
+	rdivfTwoArgs uint16 = 0x0200 | uint16(Rdivf)
+
+	exitNoArgs uint16 = uint16(Exit)
+)
 
 // Allows us to easily find and replace commands from start to end of line
 var (
@@ -45,9 +154,9 @@ var (
 )
 
 // Flags should not use more than the first 24 bits
-func NewInstruction(code Bytecode, byteArg byte, arg uint32, flags uint16) Instruction {
+func NewInstruction(numArgs byte, code Bytecode, byteArg byte, arg uint32, flags byte) Instruction {
 	return Instruction{
-		code:    code,
+		code:    (uint16(numArgs) << 8) | uint16(code),
 		flags:   flags,
 		byteArg: byteArg,
 		arg:     arg,
@@ -138,19 +247,23 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][3]st
 
 			// If it starts with a double or single quote, insert escape sequence replacements
 			if strings.HasPrefix(args, "'") || strings.HasPrefix(args, "\"") {
-				last := strings.LastIndex(args, "'")
-				if last <= 0 {
-					last = strings.LastIndex(args, "\"")
-				}
+				guardC := args[0]
+				last := strings.LastIndex(args, string(guardC))
 
 				// Make sure the double or single quote also includes a terminating quote
 				if last <= 0 {
 					return nil, errors.New("unterminated character or string")
 				}
 
-				args = insertEscapeSeqReplacements(args[1:last])
-				// last+1 so that we can include the end double or single quote in the first result,
-				// but not in the second result
+				// Insert escape sequence replacements for the characters in between the quotes
+				// re-add the quotes after (that's what guardC holds)
+
+				args = fmt.Sprintf("%c%s%c", guardC, insertEscapeSeqReplacements(args[1:last]), guardC)
+
+				// Recompute the last index since escape sequence replacements may have changed the string length
+				last = strings.LastIndex(args, string(guardC))
+
+				// last+1 so that the end single/double quote can be included
 				resultArgs[0] = args[:last+1]
 				resultArgs[1] = strings.TrimSpace(args[last+1:])
 			} else {
@@ -278,19 +391,22 @@ func parseInputLine(line [3]string) (Instruction, error) {
 	}
 
 	if numArgs == 0 {
-		return NewInstruction(code, 0, 0, 0), nil
+		return NewInstruction(0, code, 0, 0, 0), nil
 	} else if numArgs == 1 {
-		return NewInstruction(code, 0, args[0], uint16(numArgs)), nil
+		return NewInstruction(1, code, 0, args[0], 0), nil
 	} else {
 		// Make sure the first argument doesn't exceed the byte arg max
 		if args[0] > math.MaxUint8 {
 			return Instruction{}, fmt.Errorf("%s %d is too large to fit into a byte", code, args[0])
 		}
 
-		return NewInstruction(code, byte(args[0]), args[1], uint16(numArgs)), nil
+		return NewInstruction(2, code, byte(args[0]), args[1], 0), nil
 	}
 }
 
+// Takes a series of files and combines them into a program represented by a list of instructions
+// and a debug symbol map (if debug requested). The files are read sequentially so the first instruction
+// in the first file is what starts executing first.
 func CompileSource(debug bool, files ...string) (Program, error) {
 	// If requested, set up the VM in debug mode
 	var debugSymMap map[int]string

@@ -10,107 +10,6 @@ import (
 	"strings"
 )
 
-/*
-	For each CPU core:
-			- little endian
-			- 32-bit virtual architecture
-			- 32 registers starting at index 0
-			- register 0 is the program counter
-			- register 1 is the stack pointer
-			- registers indexed 2 through 31 are general purpose, 32-bit
-			- supports single stepping through instructions
-			- supports setting program breakpoints
-
-	The stack is 64kb in size minimum
-
-	Possible bytecodes
-			nop    (no operation)
-			byte   (pushes byte value onto the stack)
-			const  (pushes const value onto stack (can be a label))
-			load   (loads value of register)
-			store  (stores value of stack[0] to register)
-			kstore (stores value of stack[0] to register and keeps value on the stack)
-			loadp8, loadp16, loadp32 (loads 8, 16 or 32 bit value from address at stack[0], widens to 32 bits)
-				loadpX are essentially stack[0] = *stack[0]
-			storep8, storep16, storep32 (narrows stack[1] to 8, 16 or 32 bits and writes it to address at stack[0])
-				storepX are essentially *stack[0] = stack[1]
-
-		The push/pop instructions accept an numArgs argument. This argument is the number of bytes to push to or pop from the stack.
-		If no argument is specified, stack[0] should hold the bytes argument.
-
-			push (reserve bytes on the stack, advances stack pointer)
-			pop  (free bytes back to the stack, retracts stack pointer)
-
-		All arithmetic instructions accept an numArgs argument. This is a fast path that will perform stack[0] <op> arg and overwrite
-		the current stack value with the result.
-
-			addi, addf (int and float add)
-			subi, subf (int and float sub)
-			muli, mulf (int and float mul)
-			divi, divf (int and float div)
-
-		The remainder functions work the same as % in languages such as C. It returns the remainder after dividing stack[0] and stack[1].
-		There is a fast path for these as well that performs remainder stack[0] arg.
-
-			remu, rems (unsigned and signed remainder after integer division)
-			remf	   (remainder after floating point division)
-
-		and, or, xor instructions all take an numArgs argument. This is a fast path that will perform stack[0] <op> arg and then overwrite
-		the current stack value with the result.
-
-			not (inverts all bits of stack[0])
-			and (logical AND between stack[0] and stack[1])
-			or  (logical OR between stack[0] and stack[1])
-			xor (logical XOR between stack[0] and stack[1])
-
-		Each of the jump instructions accept an numArgs argument. If no argument is specified, stack[0] is where
-		they check for their jump address. Otherwise the argument is treated as the jump address.
-
-		Example: jnz addr (jump to addr if stack[0] is not 0)
-				 jnz	  (jump to stack[0] if stack[1] is not 0)
-
-			jmp  (unconditional jump to address at stack[0])
-			jz   (jump to address at stack[0] if stack[1] is 0)
-			jnz  (jump to address at stack[0] if stack[1] is not 0)
-			jle  (jump to address at stack[0] if stack[1] less than or equal to 0)
-			jl   (jump to address at stack[0] if stack[1] less than 0)
-			jge  (jump to address at stack[0] if stack[1] greater than or equal to 0)
-			jg   (jump to address at stack[0] if stack[1] greater than 0)
-
-		The following all do: (compare stack[0] to stack[1]: negative if stack[0] < stack[1], 0 if stack[0] == stack[1], positive if stack[0] > stack[1])
-		However, the naming scheme is as follows:
-				cmpu -> treats both inputs as unsigned 32-bit
-				cmps -> treats both inputs as signed 32-bit
-				cmpf -> treats both inputs as float 32-bit
-
-			cmpu
-			cmps
-			cmpf
-
-			writeb (writes 1 8-bit value to stdout buffer from address stored at stack[0])
-			writec (writes 1 32-bit value to stdout buffer from stack[0])
-			flush  (flushes stdout buffer to console)
-			readc  (reads 1 character from stdin - pushes to stack as 32-bit value)
-
-			exit (stops the program)
-
-	Examples:
-			const 3 // stack: [3]
-			const 5 // stack: [5, 3]
-			addi    // stack: [8]
-
-			const 2 // stack: [2, 8]
-			store	// stack: [],      register 2: 8
-
-			const 2 // stack: [2],     register 2: 8
-			load	// stack: [8],     register 2: 8
-			const 4 // stack: [4, 8],  register 2: 8
-			addi 	// stack: [12],	   register 2: 8
-
-			const 2 // stack: [2, 12], register 2: 8
-			store	// stack: [], 	   register 2: 12
-*/
-
 // Each register is just a bit pattern with no concept of
 // type (signed, unsigned int or float)
 //
@@ -314,22 +213,19 @@ func compare[T numeric32](x, y T) uint32 {
 	}
 }
 
-func getArithLogicValsPeek(vm *VM, oparg uint32, flags uint16) (uint32, uint32, []byte) {
-	if flags == 0 {
-		x, y := vm.popPeekStack()
-		return uint32FromBytes(x), uint32FromBytes(y), y
-	} else {
-		x := vm.peekStack()
-		return uint32FromBytes(x), oparg, x
-	}
+func getStackInputsNoArgs(vm *VM) (uint32, uint32, []byte) {
+	x, y := vm.popPeekStack()
+	return uint32FromBytes(x), uint32FromBytes(y), y
 }
 
-func getArithLogicValsPop(vm *VM, oparg uint32, flags uint16) (uint32, uint32) {
-	if flags == 0 {
-		return vm.popStackx2Uint32()
-	} else {
-		return vm.popStackUint32(), oparg
-	}
+func getStackInputOneArg(vm *VM) (uint32, []byte) {
+	x := vm.peekStack()
+	return uint32FromBytes(x), x
+}
+
+func getRArithValsOneArg(vm *VM) (uint32, []byte) {
+	x := vm.peekStack()
+	return uint32FromBytes(x), x
 }
 
 func arithRemi[T integer32](x, y T) (uint32, error) {
@@ -362,15 +258,15 @@ func getJumpAddrValue(vm *VM, oparg uint32, numArgs uint16) (uint32, uint32) {
 	}
 }
 
-// This is considered a tight loop. It's ok to move certain things to functions
-// if the functions are very simple (meaning Go's inlining rules take over), but
+// This is considered a tight loop. It's ok to move certain things to instructions
+// if the instructions are very simple (meaning Go's inlining rules take over), but
 // otherwise it's best to try and embed the logic directly into the switch statement.
 //
 // singleStep can be set when in debug mode so that this function runs 1 instruction
 // and then returns to caller.
 //
-// If an instruction requires arguments, they will be laid out as 32-bit instruction values
-// next to the main instruction in memory
+// The current design attempts to balance performance, readability and code reuse. There
+// is more duplication than normal in an attempt to keep everything inlined.
 func (vm *VM) execInstructions(singleStep bool) {
 	for {
 		pc := vm.pc
@@ -380,49 +276,50 @@ func (vm *VM) execInstructions(singleStep bool) {
 		}
 
 		instr := vm.program[*vm.pc]
-		code, numArgs := instr.code, instr.flags
+		code := instr.code
+		opbyte := uint32(instr.byteArg)
 		oparg := instr.arg
 
 		*pc++
 
 		switch code {
-		case (Nop):
-		case (Byte):
+		case nopNoArgs:
+		case byteOneArg:
 			vm.pushStackByte(oparg)
-		case (Const):
+		case constOneArg:
 			vm.pushStack(oparg)
-		case (Load):
+		case loadOneArg:
 			vm.pushStack(vm.registers[oparg])
-		case (Store):
+		case storeOneArg:
 			regVal := uint32FromBytes(vm.popStack())
 			vm.registers[oparg] = register(regVal)
-		case (Kstore):
+		case kstoreOneArg:
 			regVal := uint32FromBytes(vm.peekStack())
 			vm.registers[oparg] = register(regVal)
-		case (Loadp8):
+		case loadp8NoArgs:
 			bytes := vm.peekStack()
 			addr := uint32FromBytes(bytes)
 			uint32ToBytes(uint32(vm.stack[addr]), bytes)
-		case (Loadp16):
+		case loadp16NoArgs:
 			bytes := vm.peekStack()
 			addr := uint32FromBytes(bytes)
 			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.stack[addr:])), bytes)
-		case (Loadp32):
+		case loadp32NoArgs:
 			bytes := vm.peekStack()
 			addr := uint32FromBytes(bytes)
 			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.stack[addr:])), bytes)
-		case (Storep8):
+		case storep8NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
 			addr := uint32FromBytes(addrBytes)
 			vm.stack[addr] = valueBytes[0]
-		case (Storep16):
+		case storep16NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
 			addr := uint32FromBytes(addrBytes)
 
 			// unrolled loop
 			vm.stack[addr] = valueBytes[0]
 			vm.stack[addr+1] = valueBytes[1]
-		case (Storep32):
+		case storep32NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
 			addr := uint32FromBytes(addrBytes)
 
@@ -431,36 +328,70 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.stack[addr+1] = valueBytes[1]
 			vm.stack[addr+2] = valueBytes[2]
 			vm.stack[addr+3] = valueBytes[3]
-		case (Push):
-			bytes := getPushPopValue(vm, oparg, numArgs)
-			*vm.sp = *vm.sp - register(bytes)
+		case pushNoArgs:
+			bytes := vm.popStackUint32()
+			*vm.sp -= register(bytes)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
-		case (Pop):
-			bytes := getPushPopValue(vm, oparg, numArgs)
+		case pushOneArg:
+			*vm.sp -= register(oparg)
+			// This will ensure we catch invalid stack addresses
+			var _ = vm.stack[*vm.sp]
+		case popNoArgs:
+			bytes := vm.popStackUint32()
 			*vm.sp = *vm.sp + register(bytes)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
-		case (Addi):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case popOneArg:
+			*vm.sp -= register(oparg)
+			// This will ensure we catch invalid stack addresses
+			var _ = vm.stack[*vm.sp]
+
+		// Begin add instructions
+		case addiNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
 			uint32ToBytes(x+y, bytes)
-		case (Addf):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case addiOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			uint32ToBytes(x+oparg, bytes)
+		case addfNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
 			float32ToBytes(math.Float32frombits(x)+math.Float32frombits(y), bytes)
-		case (Subi):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case addfOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			float32ToBytes(math.Float32frombits(x)+math.Float32frombits(oparg), bytes)
+
+		// Begin sub instructions
+		case subiNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
 			uint32ToBytes(x-y, bytes)
-		case (Subf):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case subiOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			uint32ToBytes(x-oparg, bytes)
+		case subfNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
 			float32ToBytes(math.Float32frombits(x)-math.Float32frombits(y), bytes)
-		case (Muli):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case subfOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			float32ToBytes(math.Float32frombits(x)-math.Float32frombits(oparg), bytes)
+
+		// Begin mul instructions
+		case muliNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
 			uint32ToBytes(x*y, bytes)
-		case (Mulf):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case muliOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			uint32ToBytes(x*oparg, bytes)
+		case mulfNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
 			float32ToBytes(math.Float32frombits(x)*math.Float32frombits(y), bytes)
-		case (Divi):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case mulfOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			float32ToBytes(math.Float32frombits(x)*math.Float32frombits(oparg), bytes)
+
+		// Begin div instructions
+		case diviNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
 			// and its discussion
@@ -470,119 +401,300 @@ func (vm *VM) execInstructions(singleStep bool) {
 			}
 
 			uint32ToBytes(x/y, bytes)
-		case (Divf):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
-			float32ToBytes(math.Float32frombits(x)/math.Float32frombits(y), bytes)
-		case (Remu):
-			var resultVal uint32
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case diviOneArg:
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
 			// and its discussion
-			if y == 0 {
+			if oparg == 0 {
 				vm.errcode = errDivisionByZero
 				return
 			}
 
+			x, bytes := getStackInputOneArg(vm)
+			uint32ToBytes(x/oparg, bytes)
+		case divfNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
+			float32ToBytes(math.Float32frombits(x)/math.Float32frombits(y), bytes)
+		case divfOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			float32ToBytes(math.Float32frombits(x)/math.Float32frombits(oparg), bytes)
+
+		// Begin radd instructions
+		case raddiOneArg:
+			x, bytes := getRArithValsOneArg(vm)
+			v := vm.registers[oparg] + x
+			vm.registers[oparg] = v
+			uint32ToBytes(v, bytes)
+		case raddiTwoArgs:
+			v := vm.registers[opbyte] + oparg
+			vm.registers[opbyte] = v
+			vm.pushStack(v)
+		case raddfOneArg:
+			x, bytes := getRArithValsOneArg(vm)
+			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) + math.Float32frombits(x))
+			vm.registers[oparg] = v
+			uint32ToBytes(v, bytes)
+		case raddfTwoArgs:
+			v := math.Float32bits(math.Float32frombits(vm.registers[opbyte]) + math.Float32frombits(oparg))
+			vm.registers[opbyte] = v
+			vm.pushStack(v)
+
+		// Begin rsub instructions
+		case rsubiOneArg:
+			x, bytes := getRArithValsOneArg(vm)
+			v := vm.registers[oparg] - x
+			vm.registers[oparg] = v
+			uint32ToBytes(v, bytes)
+		case rsubiTwoArgs:
+			v := vm.registers[opbyte] - oparg
+			vm.registers[opbyte] = v
+			vm.pushStack(v)
+		case rsubfOneArg:
+			x, bytes := getRArithValsOneArg(vm)
+			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) - math.Float32frombits(x))
+			vm.registers[oparg] = v
+			uint32ToBytes(v, bytes)
+		case rsubfTwoArgs:
+			v := math.Float32bits(math.Float32frombits(vm.registers[opbyte]) - math.Float32frombits(oparg))
+			vm.registers[opbyte] = v
+			vm.pushStack(v)
+
+		// Begin rmul instructions
+		case rmuliOneArg:
+			x, bytes := getRArithValsOneArg(vm)
+			v := vm.registers[oparg] * x
+			vm.registers[oparg] = v
+			uint32ToBytes(v, bytes)
+		case rmuliTwoArgs:
+			v := vm.registers[opbyte] * oparg
+			vm.registers[opbyte] = v
+			vm.pushStack(v)
+		case rmulfOneArg:
+			x, bytes := getRArithValsOneArg(vm)
+			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) * math.Float32frombits(x))
+			vm.registers[oparg] = v
+			uint32ToBytes(v, bytes)
+		case rmulfTwoArgs:
+			v := math.Float32bits(math.Float32frombits(vm.registers[opbyte]) * math.Float32frombits(oparg))
+			vm.registers[opbyte] = v
+			vm.pushStack(v)
+
+		// Begin rdiv instructions
+		case rdiviOneArg:
+			x, bytes := getRArithValsOneArg(vm)
+			// For ints we need to check for div by 0
+			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
+			// and its discussion
+			if x == 0 {
+				vm.errcode = errDivisionByZero
+				return
+			}
+
+			v := vm.registers[oparg] / x
+			vm.registers[oparg] = v
+			uint32ToBytes(v, bytes)
+		case rdiviTwoArgs:
+			// For ints we need to check for div by 0
+			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
+			// and its discussion
+			if oparg == 0 {
+				vm.errcode = errDivisionByZero
+				return
+			}
+
+			v := vm.registers[opbyte] / oparg
+			vm.registers[opbyte] = v
+			vm.pushStack(v)
+		case rdivfOneArg:
+			x, bytes := getRArithValsOneArg(vm)
+			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) / math.Float32frombits(x))
+			vm.registers[oparg] = v
+			uint32ToBytes(v, bytes)
+		case rdivfTwoArgs:
+			v := math.Float32bits(math.Float32frombits(vm.registers[opbyte]) / math.Float32frombits(oparg))
+			vm.registers[opbyte] = v
+			vm.pushStack(v)
+
+		// Begin remainder instructions
+		case remuNoArgs:
+			var resultVal uint32
+			x, y, bytes := getStackInputsNoArgs(vm)
 			resultVal, vm.errcode = arithRemi(x, y)
 			uint32ToBytes(resultVal, bytes)
-		case (Rems):
+		case remuOneArg:
 			var resultVal uint32
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
-			// For ints we need to check for div by 0
-			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
-			// and its discussion
-			if y == 0 {
-				vm.errcode = errDivisionByZero
-				return
-			}
+			x, bytes := getStackInputOneArg(vm)
+			resultVal, vm.errcode = arithRemi(x, oparg)
+			uint32ToBytes(resultVal, bytes)
 
+		case remsNoArgs:
+			var resultVal uint32
+			x, y, bytes := getStackInputsNoArgs(vm)
 			resultVal, vm.errcode = arithRemi(int32(x), int32(y))
 			uint32ToBytes(resultVal, bytes)
-		case (Remf):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case remsOneArg:
+			var resultVal uint32
+			x, bytes := getStackInputOneArg(vm)
+			resultVal, vm.errcode = arithRemi(int32(x), int32(oparg))
+			uint32ToBytes(resultVal, bytes)
+
+		case remfNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
 			// Go's math.Mod returns remainder after floating point division
 			rem := math.Mod(float64(math.Float32frombits(x)), float64(math.Float32frombits(y)))
 			uint32ToBytes(math.Float32bits(float32(rem)), bytes)
-		case (Not):
-			bytes := vm.peekStack()
-			// Invert all bits, store result in arg
-			uint32ToBytes(^uint32FromBytes(bytes), bytes)
-		case (And):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case remfOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			// Go's math.Mod returns remainder after floating point division
+			rem := math.Mod(float64(math.Float32frombits(x)), float64(math.Float32frombits(oparg)))
+			uint32ToBytes(math.Float32bits(float32(rem)), bytes)
+
+		// Begin logic instructions
+		case notNoArgs:
+			x, bytes := getStackInputOneArg(vm)
+			// Invert all bits, store result on stack
+			uint32ToBytes(^x, bytes)
+
+		case andNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
 			uint32ToBytes(x&y, bytes)
-		case (Or):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case andOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			uint32ToBytes(x&oparg, bytes)
+
+		case orNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
 			uint32ToBytes(x|y, bytes)
-		case (Xor):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
+		case orOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			uint32ToBytes(x|oparg, bytes)
+
+		case xorNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
 			uint32ToBytes(x^y, bytes)
-		case (Jmp):
-			addr := oparg
-			if numArgs == 0 {
-				addr = uint32FromBytes(vm.popStack())
-			}
-			*pc = register(addr)
-		case (Jz):
-			addr, value := getJumpAddrValue(vm, oparg, numArgs)
+		case xorOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			uint32ToBytes(x^oparg, bytes)
+
+		// Begin left/right shift instructions
+		case shiftLNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
+			uint32ToBytes(x<<y, bytes)
+		case shiftLOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			uint32ToBytes(x<<oparg, bytes)
+
+		case shiftRNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
+			uint32ToBytes(x>>y, bytes)
+		case shiftROneArg:
+			x, bytes := getStackInputOneArg(vm)
+			uint32ToBytes(x>>oparg, bytes)
+
+		// Begin jump instructions
+		case jmpNoArgs:
+			*pc = register(uint32FromBytes(vm.popStack()))
+		case jmpOneArg:
+			*pc = register(oparg)
+
+		case jzNoArgs:
+			addr, value := vm.popStackx2Uint32()
 			if value == 0 {
 				*pc = addr
 			}
-		case (Jnz):
-			addr, value := getJumpAddrValue(vm, oparg, numArgs)
+		case jzOneArg:
+			addr, value := oparg, vm.popStackUint32()
+			if value == 0 {
+				*pc = addr
+			}
+
+		case jnzNoArgs:
+			addr, value := vm.popStackx2Uint32()
 			if value != 0 {
 				*pc = addr
 			}
-		case (Jle):
-			addr, value := getJumpAddrValue(vm, oparg, numArgs)
+		case jnzOneArg:
+			addr, value := oparg, vm.popStackUint32()
+			if value != 0 {
+				*pc = addr
+			}
+
+		case jleNoArgs:
+			addr, value := vm.popStackx2Uint32()
 			if int32(value) <= 0 {
 				*pc = addr
 			}
-		case (Jl):
-			addr, value := getJumpAddrValue(vm, oparg, numArgs)
+		case jleOneArg:
+			addr, value := oparg, vm.popStackUint32()
+			if int32(value) <= 0 {
+				*pc = addr
+			}
+
+		case jlNoArgs:
+			addr, value := vm.popStackx2Uint32()
 			if int32(value) < 0 {
 				*pc = addr
 			}
-		case (Jge):
-			addr, value := getJumpAddrValue(vm, oparg, numArgs)
+		case jlOneArg:
+			addr, value := oparg, vm.popStackUint32()
+			if int32(value) < 0 {
+				*pc = addr
+			}
+
+		case jgeNoArgs:
+			addr, value := vm.popStackx2Uint32()
 			if int32(value) >= 0 {
 				*pc = addr
 			}
-		case (Jg):
-			addr, value := getJumpAddrValue(vm, oparg, numArgs)
+		case jgeOneArg:
+			addr, value := oparg, vm.popStackUint32()
+			if int32(value) >= 0 {
+				*pc = addr
+			}
+
+		case jgNoArgs:
+			addr, value := vm.popStackx2Uint32()
 			if int32(value) > 0 {
 				*pc = addr
 			}
-		case (Cmpu):
-			x, y := vm.popPeekStack()
-			// Overwrite y bytes with result of compare
-			uint32ToBytes(compare(uint32FromBytes(x), uint32FromBytes(y)), y)
-		case (Cmps):
-			x, y := vm.popPeekStack()
-			// Overwrite y bytes with result of compare
-			uint32ToBytes(compare(int32FromBytes(x), int32FromBytes(y)), y)
-		case (Cmpf):
-			x, y := vm.popPeekStack()
-			// Overwrite y bytes with result of compare
-			uint32ToBytes(compare(float32FromBytes(x), float32FromBytes(y)), y)
-		case (Writeb):
-			addr := uint32FromBytes(vm.popStack())
+		case jgOneArg:
+			addr, value := oparg, vm.popStackUint32()
+			if int32(value) > 0 {
+				*pc = addr
+			}
+
+		// Begin comparison instructions
+		case cmpuNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
+			uint32ToBytes(compare(x, y), bytes)
+		case cmpsNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
+			uint32ToBytes(compare(int32(x), int32(y)), bytes)
+		case cmpfNoArgs:
+			x, y, bytes := getStackInputsNoArgs(vm)
+			uint32ToBytes(compare(math.Float32frombits(x), math.Float32frombits(y)), bytes)
+
+		// Begin console IO instructions
+		case writebNoArgs:
+			addr := vm.popStackUint32()
 			vm.stdout.WriteByte(vm.stack[addr])
-		case (Writec):
-			character := rune(uint32FromBytes(vm.popStack()))
+		case writecNoArgs:
+			character := rune(vm.popStackUint32())
 			vm.stdout.WriteRune(character)
-		case (Flush):
+		case flushNoArgs:
 			vm.stdout.Flush()
-		case (Readc):
+		case readcNoArgs:
 			character, _, err := vm.stdin.ReadRune()
 			if err != nil {
 				vm.errcode = errIO
 				return
 			}
 			vm.pushStack(uint32(character))
-		case (Exit):
+
+		case exitNoArgs:
 			// Sets the pc to be one after the last instruction
 			*pc = register(len(vm.program))
+
 		default:
 			// Shouldn't get here since we preprocess+parse all source into
 			// valid instructions before executing
