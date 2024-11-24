@@ -14,7 +14,8 @@ func getDefaultRecoverFuncForVM(vm *VM) func() {
 		if r := recover(); r != nil {
 			err := errSegmentationFault
 			pc := *vm.pc
-			// Back up the program counter to offending address if possible
+
+			// Back up to instruction that failed
 			if pc > 0 {
 				pc--
 			}

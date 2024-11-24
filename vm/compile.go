@@ -1,14 +1,27 @@
 package gvm
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
 )
+
+type Instruction struct {
+	code  uint16
+	flags uint16
+	arg   uint32
+}
+
+type Program struct {
+	instructions []Instruction
+	debugSymMap  map[int]string
+}
 
 // Allows us to easily find and replace commands from start to end of line
 var (
@@ -27,6 +40,39 @@ var (
 		"\\\"": "\"",
 	}
 )
+
+const (
+	hasOptionalArg uint16 = 0x01
+)
+
+func FormatInstructionCode(code Bytecode, flags uint32) uint32 {
+	return uint32(code) | (flags << 8)
+}
+
+// Flags should not use more than the first 24 bits
+func NewInstruction(modifier byte, code Bytecode, arg uint32, flags uint16) Instruction {
+	return Instruction{
+		code:  (uint16(modifier) << 8) | uint16(code),
+		flags: flags,
+		arg:   arg,
+	}
+}
+
+func (instr Instruction) String() string {
+	code := Bytecode(instr.code)
+	if code.RequiresOpArg() || (code.OptionalOpArg() && instr.flags > 0) {
+		intArg := int32(instr.arg)
+		if intArg < 0 {
+			// Add both the negative and unsigned version to the output
+			return fmt.Sprintf("%s %d (%d)", code.String(), intArg, instr.arg)
+		}
+		// Only include the unsigned version
+		return fmt.Sprintf("%s %d", code.String(), instr.arg)
+	} else {
+		// No op arg - only include code string
+		return code.String()
+	}
+}
 
 // Checks for things like \\n and replaces it with \n
 func insertEscapeSeqReplacements(line string) string {
@@ -147,7 +193,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 				return Instruction{}, errors.New("character is too large to fit into 32 bits")
 			}
 
-			return NewInstruction(code, uint32(runes[1]), 1), nil
+			return NewInstruction(0, code, uint32(runes[1]), hasOptionalArg), nil
 		} else {
 			// Likely a regular number or float
 			if strings.Contains(strArg, ".") {
@@ -156,7 +202,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 					return Instruction{}, err
 				}
 
-				return NewInstruction(code, math.Float32bits(float32(arg)), 1), nil
+				return NewInstruction(0, code, math.Float32bits(float32(arg)), hasOptionalArg), nil
 			} else {
 				var arg int64
 				var err error
@@ -173,7 +219,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 					return Instruction{}, err
 				}
 
-				return NewInstruction(code, uint32(arg), 1), nil
+				return NewInstruction(0, code, uint32(arg), hasOptionalArg), nil
 			}
 		}
 	} else {
@@ -181,6 +227,86 @@ func parseInputLine(line [2]string) (Instruction, error) {
 			return Instruction{}, fmt.Errorf("%s requires an op argument", code.String())
 		}
 
-		return NewInstruction(code, 0, 0), nil
+		return NewInstruction(0, code, 0, 0), nil
 	}
+}
+
+// Attempts to merge adjacent instructions if possible for performance during execution
+func mergeInstructions(program []Instruction) {
+	for i := 0; i < len(program)-1; i++ {
+	}
+}
+
+func CompileSource(debug bool, files ...string) (Program, error) {
+	// If requested, set up the VM in debug mode
+	var debugSymMap map[int]string
+	if debug {
+		debugSymMap = make(map[int]string)
+	}
+
+	// Read each file
+	lines := make([]string, 0)
+	for _, filename := range files {
+		file, err := os.Open(filename)
+		if err != nil {
+			fmt.Println("Could not read", filename)
+			return Program{}, err
+		}
+
+		reader := bufio.NewReader(file)
+		for {
+			line, _, err := reader.ReadLine()
+			if err != nil {
+				break
+			}
+
+			lines = append(lines, string(line))
+		}
+	}
+
+	// Maps from regex(label) -> address string
+	labels := make(map[*regexp.Regexp]string)
+	preprocessedLines := make([][2]string, 0)
+
+	// First preprocess line to remove whitespace lines and convert labels
+	// into line numbers
+	for _, line := range lines {
+		var err error
+		preprocessedLines, err = preprocessLine(string(line), labels, preprocessedLines, debugSymMap)
+		if err != nil {
+			return Program{}, err
+		}
+	}
+
+	instructions := make([]Instruction, 0, len(preprocessedLines))
+
+	// Parse each input line to generate a list of instructions
+	for _, line := range preprocessedLines {
+		// Replace all labels with their instruction address
+		for label, lineNum := range labels {
+			line[1] = label.ReplaceAllString(line[1], lineNum)
+		}
+
+		instr, err := parseInputLine(line)
+		if err != nil {
+			return Program{}, err
+		}
+
+		instructions = append(instructions, instr)
+	}
+
+	// Check for invalid register stores
+	for i, instr := range instructions {
+		code := Bytecode(instr.code)
+		if code == Store || code == Kstore {
+			if instr.arg < 2 {
+				return Program{}, fmt.Errorf("illegal register write at %d: %s %d", i, code, instr.arg)
+			}
+		}
+	}
+
+	// Perform instruction merging to possibly improve performance
+	mergeInstructions(instructions)
+
+	return Program{instructions: instructions, debugSymMap: debugSymMap}, nil
 }

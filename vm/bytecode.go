@@ -1,9 +1,5 @@
 package gvm
 
-import (
-	"fmt"
-)
-
 type Bytecode byte
 
 const (
@@ -59,11 +55,6 @@ const (
 	Exit Bytecode = 0xFF
 )
 
-type Instruction struct {
-	code uint32
-	arg  uint32
-}
-
 var (
 	// Maps from string -> instruction
 	strToInstrMap = map[string]Bytecode{
@@ -117,18 +108,6 @@ var (
 	instrToStrMap map[Bytecode]string
 )
 
-func NewInstruction(code Bytecode, arg uint32, data uint16) Instruction {
-	return Instruction{
-		code: uint32(code) | (uint32(data) << 8),
-		arg:  arg,
-	}
-}
-
-// Splits an instruction code into (bytecode, data) pair
-func (instr Instruction) DecodeInstruction() (Bytecode, uint32) {
-	return Bytecode(instr.code & 0xff), (instr.code & 0xffffff00) >> 8
-}
-
 // Convert bytecode to string
 func (b Bytecode) String() string {
 	str, ok := instrToStrMap[b]
@@ -154,20 +133,16 @@ func (b Bytecode) OptionalOpArg() bool {
 		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg
 }
 
-func (instr Instruction) String() string {
-	code, data := instr.DecodeInstruction()
-	if code.RequiresOpArg() || (code.OptionalOpArg() && data > 0) {
-		intArg := int32(instr.arg)
-		if intArg < 0 {
-			// Add both the negative and unsigned version to the output
-			return fmt.Sprintf("%s %d (%d)", code.String(), intArg, instr.arg)
-		}
-		// Only include the unsigned version
-		return fmt.Sprintf("%s %d", code.String(), instr.arg)
-	} else {
-		// No op arg - only include code string
-		return code.String()
-	}
+// Returns true if the bytecode is meant to push a value to the stack or overwrite the top
+// value on the stack
+func (b Bytecode) PushesToStack1Value() bool {
+	return b == Byte || b == Const ||
+		b == Load || b == Loadp8 || b == Loadp16 || b == Loadp32 ||
+		b == Addi || b == Addf || b == Subi || b == Subf || b == Muli || b == Mulf || b == Divi || b == Divf ||
+		b == Remu || b == Rems || b == Remf ||
+		b == Not || b == And || b == Or || b == Xor ||
+		b == Cmpu || b == Cmps || b == Cmpf ||
+		b == Readc
 }
 
 // This is called when package is first loaded (before main)

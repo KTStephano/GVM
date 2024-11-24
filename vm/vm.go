@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"regexp"
 	"strings"
 )
 
@@ -139,7 +138,7 @@ type VM struct {
 	// This gets written to whenever program encounters a normal or critical error
 	errcode error
 
-	// Debug data
+	// Debug flags
 	debugOut *strings.Builder
 	debugSym *debugSymbols
 }
@@ -170,76 +169,27 @@ var (
 	errIO                 = errors.New("input-output error")
 )
 
-func NewVirtualMachine(debug bool, files ...string) (*VM, error) {
-	vm := &VM{stdin: bufio.NewReader(os.Stdin)}
+func NewVirtualMachine(program Program) *VM {
+	vm := &VM{
+		program: program.instructions,
+		stdin:   bufio.NewReader(os.Stdin),
+	}
+
 	vm.pc = &vm.registers[0]
 	vm.sp = &vm.registers[1]
 	// Set stack pointer to be 1 after the last valid stack address
 	// (indexing this will trigger a seg fault)
 	*vm.sp = stackSize
 
-	// If requested, set up the VM in debug mode
-	var debugSymMap map[int]string
-	if debug {
-		debugSymMap = make(map[int]string)
+	if program.debugSymMap != nil {
 		vm.debugOut = &strings.Builder{}
-		vm.debugSym = &debugSymbols{source: debugSymMap}
+		vm.debugSym = &debugSymbols{source: program.debugSymMap}
 		vm.stdout = bufio.NewWriter(vm.debugOut)
 	} else {
 		vm.stdout = bufio.NewWriter(os.Stdout)
 	}
 
-	// Read each file
-	lines := make([]string, 0)
-	for _, filename := range files {
-		file, err := os.Open(filename)
-		if err != nil {
-			fmt.Println("Could not read", filename)
-			return nil, err
-		}
-
-		reader := bufio.NewReader(file)
-		for {
-			line, _, err := reader.ReadLine()
-			if err != nil {
-				break
-			}
-
-			lines = append(lines, string(line))
-		}
-	}
-
-	// Maps from regex(label) -> address string
-	labels := make(map[*regexp.Regexp]string)
-	preprocessedLines := make([][2]string, 0)
-
-	// First preprocess line to remove whitespace lines and convert labels
-	// into line numbers
-	for _, line := range lines {
-		var err error
-		preprocessedLines, err = preprocessLine(string(line), labels, preprocessedLines, debugSymMap)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	vm.program = make([]Instruction, 0, len(preprocessedLines))
-
-	for _, line := range preprocessedLines {
-		// Replace all labels with their instruction address
-		for label, lineNum := range labels {
-			line[1] = label.ReplaceAllString(line[1], lineNum)
-		}
-
-		instrs, err := parseInputLine(line)
-		if err != nil {
-			return nil, err
-		}
-
-		vm.program = append(vm.program, instrs)
-	}
-
-	return vm, nil
+	return vm
 }
 
 func formatInstructionStr(vm *VM, pc register, prefix string) string {
@@ -365,181 +315,48 @@ func compare[T numeric32](x, y T) uint32 {
 	}
 }
 
-func arithAddi(x, y []byte) {
-	// Overwrite y with result
-	uint32ToBytes(uint32FromBytes(x)+uint32FromBytes(y), y)
-}
-
-func arithAddf(x, y []byte) {
-	// Overwrite y with result
-	float32ToBytes(float32FromBytes(x)+float32FromBytes(y), y)
-}
-
-func arithAddiFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	uint32ToBytes(uint32FromBytes(x)+y, x)
-}
-
-func arithAddfFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	float32ToBytes(float32FromBytes(x)+math.Float32frombits(y), x)
-}
-
-func arithSubi(x, y []byte) {
-	// Overwrite y with result
-	uint32ToBytes(uint32FromBytes(x)-uint32FromBytes(y), y)
-}
-
-func arithSubf(x, y []byte) {
-	// Overwrite y with result
-	float32ToBytes(float32FromBytes(x)-float32FromBytes(y), y)
-}
-
-func arithSubiFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	uint32ToBytes(uint32FromBytes(x)-y, x)
-}
-
-func arithSubfFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	float32ToBytes(float32FromBytes(x)-math.Float32frombits(y), x)
-}
-
-func arithMuli(x, y []byte) {
-	// Overwrite y with result
-	uint32ToBytes(uint32FromBytes(x)*uint32FromBytes(y), y)
-}
-
-func arithMulf(x, y []byte) {
-	// Overwrite y with result
-	float32ToBytes(float32FromBytes(x)*float32FromBytes(y), y)
-}
-
-func arithMuliFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	uint32ToBytes(uint32FromBytes(x)*y, x)
-}
-
-func arithMulfFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	float32ToBytes(float32FromBytes(x)*math.Float32frombits(y), x)
-}
-
-func arithDivi(x, y []byte) error {
-	yval := uint32FromBytes(y)
-	// For ints we need to check for div by 0
-	// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
-	// and its discussion
-	if yval == 0 {
-		return errDivisionByZero
-	}
-
-	// Overwrite y with result
-	uint32ToBytes(uint32FromBytes(x)/yval, y)
-	return nil
-}
-
-func arithDivf(x, y []byte) {
-	// Overwrite y with result
-	float32ToBytes(float32FromBytes(x)/float32FromBytes(y), y)
-}
-
-func arithDiviFast(vm *VM, y uint32) {
-	// For ints we need to check for div by 0
-	// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
-	// and its discussion
-	if y == 0 {
-		vm.errcode = errDivisionByZero
-	}
-
-	x := vm.peekStack()
-	uint32ToBytes(uint32FromBytes(x)/y, x)
-}
-
-func arithDivfFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	float32ToBytes(float32FromBytes(x)/math.Float32frombits(y), x)
-}
-
-func getArithRemiVals(vm *VM, oparg, data uint32) (uint32, uint32, []byte) {
-	if data == 0 {
+func getArithLogicValsPeek(vm *VM, oparg uint32, flags uint16) (uint32, uint32, []byte) {
+	if flags == 0 {
 		x, y := vm.popPeekStack()
-		// Overwrite y with result
 		return uint32FromBytes(x), uint32FromBytes(y), y
 	} else {
 		x := vm.peekStack()
-		// Overwrite x with result
 		return uint32FromBytes(x), oparg, x
 	}
 }
 
-func getArithRemfVals(vm *VM, oparg, data uint32) (float32, float32, []byte) {
-	if data == 0 {
-		x, y := vm.popPeekStack()
-		// Overwrite y with result
-		return float32FromBytes(x), float32FromBytes(y), y
+func getArithLogicValsPop(vm *VM, oparg uint32, flags uint16) (uint32, uint32) {
+	if flags == 0 {
+		return vm.popStackx2Uint32()
 	} else {
-		x := vm.peekStack()
-		// Overwrite x with result
-		return float32FromBytes(x), math.Float32frombits(oparg), x
+		return vm.popStackUint32(), oparg
 	}
 }
 
-func arithRemi[T integer32](x, y T, bytes []byte) error {
+func arithRemi[T integer32](x, y T) (uint32, error) {
 	if y == 0 {
-		return errDivisionByZero
+		return 0, errDivisionByZero
 	}
 
-	uint32ToBytes(uint32(x%y), bytes)
-	return nil
+	return uint32(x % y), nil
 }
 
-func logicalAnd(x, y []byte) {
-	// Overwrite y with result
-	uint32ToBytes(uint32FromBytes(x)&uint32FromBytes(y), y)
-}
-
-func logicalAndFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	uint32ToBytes(uint32FromBytes(x)&y, x)
-}
-
-func logicalOr(x, y []byte) {
-	// Overwrite y with result
-	uint32ToBytes(uint32FromBytes(x)|uint32FromBytes(y), y)
-}
-
-func logicalOrFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	uint32ToBytes(uint32FromBytes(x)|y, x)
-}
-
-func logicalXor(x, y []byte) {
-	// Overwrite y with result
-	uint32ToBytes(uint32FromBytes(x)^uint32FromBytes(y), y)
-}
-
-func logicalXorFast(vm *VM, y uint32) {
-	x := vm.peekStack()
-	uint32ToBytes(uint32FromBytes(x)^y, x)
-}
-
-// Returns value (bytes) for the push/pop instructions. If data > 0
+// Returns value (bytes) for the push/pop instructions. If flags > 0
 // it will use oparg as the value, otherwise it will pop the bytes value
 // from the stack
-func getPushPopValue(vm *VM, oparg, data uint32) uint32 {
-	if data == 0 {
+func getPushPopValue(vm *VM, oparg uint32, optional uint16) uint32 {
+	if optional == 0 {
 		return vm.popStackUint32()
 	} else {
 		return oparg
 	}
 }
 
-// Returns (addr, value) for the conditional jumps. If data is > 0
+// Returns (addr, value) for the conditional jumps. If flags is > 0
 // it will use oparg as the address, otherwise it will pop the address
 // from the stack.
-func getJumpAddrValue(vm *VM, oparg, data uint32) (uint32, uint32) {
-	if data == 0 {
+func getJumpAddrValue(vm *VM, oparg uint32, optional uint16) (uint32, uint32) {
+	if optional == 0 {
 		return vm.popStackx2Uint32()
 	} else {
 		return oparg, vm.popStackUint32()
@@ -563,9 +380,11 @@ func (vm *VM) execInstructions(singleStep bool) {
 			return
 		}
 
-		instr := vm.program[*pc]
-		code, data := instr.DecodeInstruction()
+		instr := vm.program[*vm.pc]
+		code, flags := Bytecode(instr.code), instr.flags
 		oparg := instr.arg
+		optional := flags & hasOptionalArg
+
 		*pc++
 
 		switch code {
@@ -577,36 +396,23 @@ func (vm *VM) execInstructions(singleStep bool) {
 		case Load:
 			vm.pushStack(vm.registers[oparg])
 		case Store:
-			fallthrough
+			regVal := uint32FromBytes(vm.popStack())
+			vm.registers[oparg] = register(regVal)
 		case Kstore:
-			if oparg < 2 {
-				// not allowed to write to program counter or stack pointer
-				vm.errcode = errIllegalOperation
-				return
-			}
-
-			regValue := uint32FromBytes(vm.peekStack())
-			vm.registers[oparg] = register(regValue)
-
-			if code == Store {
-				// In the case of store, modify stack pointer
-				*vm.sp += varchBytes
-			}
+			regVal := uint32FromBytes(vm.peekStack())
+			vm.registers[oparg] = register(regVal)
 		case Loadp8:
-			addrBytes := vm.peekStack()
-			addr := uint32FromBytes(addrBytes)
-			// overwrite addrBytes with memory value
-			uint32ToBytes(uint32(vm.stack[addr]), addrBytes)
+			bytes := vm.peekStack()
+			addr := uint32FromBytes(bytes)
+			uint32ToBytes(uint32(vm.stack[addr]), bytes)
 		case Loadp16:
-			addrBytes := vm.peekStack()
-			addr := uint32FromBytes(addrBytes)
-			// overwrite addrBytes with memory value
-			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.stack[addr:])), addrBytes)
+			bytes := vm.peekStack()
+			addr := uint32FromBytes(bytes)
+			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.stack[addr:])), bytes)
 		case Loadp32:
-			addrBytes := vm.peekStack()
-			addr := uint32FromBytes(addrBytes)
-			// overwrite addrBytes with memory value
-			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.stack[addr:])), addrBytes)
+			bytes := vm.peekStack()
+			addr := uint32FromBytes(bytes)
+			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.stack[addr:])), bytes)
 		case Storep8:
 			addrBytes, valueBytes := vm.popStackx2()
 			addr := uint32FromBytes(addrBytes)
@@ -628,153 +434,131 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.stack[addr+2] = valueBytes[2]
 			vm.stack[addr+3] = valueBytes[3]
 		case Push:
-			bytes := getPushPopValue(vm, oparg, data)
+			bytes := getPushPopValue(vm, oparg, optional)
 			*vm.sp = *vm.sp - register(bytes)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
 		case Pop:
-			bytes := getPushPopValue(vm, oparg, data)
+			bytes := getPushPopValue(vm, oparg, optional)
 			*vm.sp = *vm.sp + register(bytes)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
 		case Addi:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithAddi(arg0Bytes, arg1Bytes)
+			if optional == 0 {
+				x, y := vm.popPeekStack()
+				uint32ToBytes(uint32FromBytes(x)+uint32FromBytes(y), y)
 			} else {
-				arithAddiFast(vm, oparg)
+				x := vm.peekStack()
+				uint32ToBytes(uint32FromBytes(x)+oparg, x)
 			}
 		case Addf:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithAddf(arg0Bytes, arg1Bytes)
-			} else {
-				arithAddfFast(vm, oparg)
-			}
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			float32ToBytes(math.Float32frombits(x)+math.Float32frombits(y), bytes)
 		case Subi:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithSubi(arg0Bytes, arg1Bytes)
-			} else {
-				arithSubiFast(vm, oparg)
-			}
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			uint32ToBytes(x-y, bytes)
 		case Subf:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithSubf(arg0Bytes, arg1Bytes)
-			} else {
-				arithSubfFast(vm, oparg)
-			}
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			float32ToBytes(math.Float32frombits(x)-math.Float32frombits(y), bytes)
 		case Muli:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithMuli(arg0Bytes, arg1Bytes)
-			} else {
-				arithMuliFast(vm, oparg)
-			}
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			uint32ToBytes(x*y, bytes)
 		case Mulf:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithMulf(arg0Bytes, arg1Bytes)
-			} else {
-				arithMulfFast(vm, oparg)
-			}
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			float32ToBytes(math.Float32frombits(x)*math.Float32frombits(y), bytes)
 		case Divi:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				vm.errcode = arithDivi(arg0Bytes, arg1Bytes)
-			} else {
-				arithDiviFast(vm, oparg)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			// For ints we need to check for div by 0
+			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
+			// and its discussion
+			if y == 0 {
+				vm.errcode = errDivisionByZero
+				return
 			}
+
+			uint32ToBytes(x/y, bytes)
 		case Divf:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				arithDivf(arg0Bytes, arg1Bytes)
-			} else {
-				arithDivfFast(vm, oparg)
-			}
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			float32ToBytes(math.Float32frombits(x)/math.Float32frombits(y), bytes)
 		case Remu:
-			x, y, bytes := getArithRemiVals(vm, oparg, data)
-			vm.errcode = arithRemi(x, y, bytes)
+			var resultVal uint32
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			// For ints we need to check for div by 0
+			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
+			// and its discussion
+			if y == 0 {
+				vm.errcode = errDivisionByZero
+				return
+			}
+
+			resultVal, vm.errcode = arithRemi(x, y)
+			uint32ToBytes(resultVal, bytes)
 		case Rems:
-			x, y, bytes := getArithRemiVals(vm, oparg, data)
-			vm.errcode = arithRemi(int32(x), int32(y), bytes)
+			var resultVal uint32
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			// For ints we need to check for div by 0
+			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
+			// and its discussion
+			if y == 0 {
+				vm.errcode = errDivisionByZero
+				return
+			}
+
+			resultVal, vm.errcode = arithRemi(int32(x), int32(y))
+			uint32ToBytes(resultVal, bytes)
 		case Remf:
-			x, y, bytes := getArithRemfVals(vm, oparg, data)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			// Go's math.Mod returns remainder after floating point division
-			rem := math.Mod(float64(x), float64(y))
-			float32ToBytes(float32(rem), bytes)
+			rem := math.Mod(float64(math.Float32frombits(x)), float64(math.Float32frombits(y)))
+			uint32ToBytes(math.Float32bits(float32(rem)), bytes)
 		case Not:
-			arg := vm.peekStack()
+			bytes := vm.peekStack()
 			// Invert all bits, store result in arg
-			uint32ToBytes(^uint32FromBytes(arg), arg)
+			uint32ToBytes(^uint32FromBytes(bytes), bytes)
 		case And:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				logicalAnd(arg0Bytes, arg1Bytes)
-			} else {
-				logicalAndFast(vm, oparg)
-			}
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			uint32ToBytes(x&y, bytes)
 		case Or:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				logicalOr(arg0Bytes, arg1Bytes)
-			} else {
-				logicalOrFast(vm, oparg)
-			}
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			uint32ToBytes(x|y, bytes)
 		case Xor:
-			if data == 0 {
-				arg0Bytes, arg1Bytes := vm.popPeekStack()
-				// Overwrites arg1Bytes with result of op
-				logicalXor(arg0Bytes, arg1Bytes)
-			} else {
-				logicalXorFast(vm, oparg)
-			}
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			uint32ToBytes(x^y, bytes)
 		case Jmp:
 			addr := oparg
-			if data == 0 {
+			if optional == 0 {
 				addr = uint32FromBytes(vm.popStack())
 			}
 			*pc = register(addr)
 		case Jz:
-			addr, value := getJumpAddrValue(vm, oparg, data)
+			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if value == 0 {
-				*vm.pc = addr
+				*pc = addr
 			}
 		case Jnz:
-			addr, value := getJumpAddrValue(vm, oparg, data)
+			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if value != 0 {
-				*vm.pc = addr
+				*pc = addr
 			}
 		case Jle:
-			addr, value := getJumpAddrValue(vm, oparg, data)
+			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if int32(value) <= 0 {
-				*vm.pc = addr
+				*pc = addr
 			}
 		case Jl:
-			addr, value := getJumpAddrValue(vm, oparg, data)
+			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if int32(value) < 0 {
-				*vm.pc = addr
+				*pc = addr
 			}
 		case Jge:
-			addr, value := getJumpAddrValue(vm, oparg, data)
+			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if int32(value) >= 0 {
-				*vm.pc = addr
+				*pc = addr
 			}
 		case Jg:
-			addr, value := getJumpAddrValue(vm, oparg, data)
+			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if int32(value) > 0 {
-				*vm.pc = addr
+				*pc = addr
 			}
 		case Cmpu:
 			x, y := vm.popPeekStack()

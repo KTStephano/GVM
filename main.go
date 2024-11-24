@@ -31,12 +31,13 @@ func main() {
 		return
 	}
 
-	vm, err := gvm.NewVirtualMachine(*debugVM, args...)
+	program, err := gvm.CompileSource(*debugVM, args...)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
+	vm := gvm.NewVirtualMachine(program)
 	if *debugVM {
 		vm.RunProgramDebugMode()
 	} else {
