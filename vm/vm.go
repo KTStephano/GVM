@@ -35,13 +35,13 @@ import (
 			storep8, storep16, storep32 (narrows stack[1] to 8, 16 or 32 bits and writes it to address at stack[0])
 				storepX are essentially *stack[0] = stack[1]
 
-		The push/pop instructions accept an optional argument. This argument is the number of bytes to push to or pop from the stack.
+		The push/pop instructions accept an numArgs argument. This argument is the number of bytes to push to or pop from the stack.
 		If no argument is specified, stack[0] should hold the bytes argument.
 
 			push (reserve bytes on the stack, advances stack pointer)
 			pop  (free bytes back to the stack, retracts stack pointer)
 
-		All arithmetic instructions accept an optional argument. This is a fast path that will perform stack[0] <op> arg and overwrite
+		All arithmetic instructions accept an numArgs argument. This is a fast path that will perform stack[0] <op> arg and overwrite
 		the current stack value with the result.
 
 			addi, addf (int and float add)
@@ -55,7 +55,7 @@ import (
 			remu, rems (unsigned and signed remainder after integer division)
 			remf	   (remainder after floating point division)
 
-		and, or, xor instructions all take an optional argument. This is a fast path that will perform stack[0] <op> arg and then overwrite
+		and, or, xor instructions all take an numArgs argument. This is a fast path that will perform stack[0] <op> arg and then overwrite
 		the current stack value with the result.
 
 			not (inverts all bits of stack[0])
@@ -63,7 +63,7 @@ import (
 			or  (logical OR between stack[0] and stack[1])
 			xor (logical XOR between stack[0] and stack[1])
 
-		Each of the jump instructions accept an optional argument. If no argument is specified, stack[0] is where
+		Each of the jump instructions accept an numArgs argument. If no argument is specified, stack[0] is where
 		they check for their jump address. Otherwise the argument is treated as the jump address.
 
 		Example: jnz addr (jump to addr if stack[0] is not 0)
@@ -343,8 +343,8 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 // Returns value (bytes) for the push/pop instructions. If flags > 0
 // it will use oparg as the value, otherwise it will pop the bytes value
 // from the stack
-func getPushPopValue(vm *VM, oparg uint32, optional uint16) uint32 {
-	if optional == 0 {
+func getPushPopValue(vm *VM, oparg uint32, numArgs uint16) uint32 {
+	if numArgs == 0 {
 		return vm.popStackUint32()
 	} else {
 		return oparg
@@ -354,8 +354,8 @@ func getPushPopValue(vm *VM, oparg uint32, optional uint16) uint32 {
 // Returns (addr, value) for the conditional jumps. If flags is > 0
 // it will use oparg as the address, otherwise it will pop the address
 // from the stack.
-func getJumpAddrValue(vm *VM, oparg uint32, optional uint16) (uint32, uint32) {
-	if optional == 0 {
+func getJumpAddrValue(vm *VM, oparg uint32, numArgs uint16) (uint32, uint32) {
+	if numArgs == 0 {
 		return vm.popStackx2Uint32()
 	} else {
 		return oparg, vm.popStackUint32()
@@ -380,9 +380,8 @@ func (vm *VM) execInstructions(singleStep bool) {
 		}
 
 		instr := vm.program[*vm.pc]
-		code, flags := instr.code, instr.flags
+		code, numArgs := instr.code, instr.flags
 		oparg := instr.arg
-		optional := flags & hasOptionalArg
 
 		*pc++
 
@@ -433,35 +432,35 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.stack[addr+2] = valueBytes[2]
 			vm.stack[addr+3] = valueBytes[3]
 		case (Push):
-			bytes := getPushPopValue(vm, oparg, optional)
+			bytes := getPushPopValue(vm, oparg, numArgs)
 			*vm.sp = *vm.sp - register(bytes)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
 		case (Pop):
-			bytes := getPushPopValue(vm, oparg, optional)
+			bytes := getPushPopValue(vm, oparg, numArgs)
 			*vm.sp = *vm.sp + register(bytes)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
 		case (Addi):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			uint32ToBytes(x+y, bytes)
 		case (Addf):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			float32ToBytes(math.Float32frombits(x)+math.Float32frombits(y), bytes)
 		case (Subi):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			uint32ToBytes(x-y, bytes)
 		case (Subf):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			float32ToBytes(math.Float32frombits(x)-math.Float32frombits(y), bytes)
 		case (Muli):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			uint32ToBytes(x*y, bytes)
 		case (Mulf):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			float32ToBytes(math.Float32frombits(x)*math.Float32frombits(y), bytes)
 		case (Divi):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
 			// and its discussion
@@ -472,11 +471,11 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 			uint32ToBytes(x/y, bytes)
 		case (Divf):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			float32ToBytes(math.Float32frombits(x)/math.Float32frombits(y), bytes)
 		case (Remu):
 			var resultVal uint32
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
 			// and its discussion
@@ -489,7 +488,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			uint32ToBytes(resultVal, bytes)
 		case (Rems):
 			var resultVal uint32
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
 			// and its discussion
@@ -501,7 +500,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			resultVal, vm.errcode = arithRemi(int32(x), int32(y))
 			uint32ToBytes(resultVal, bytes)
 		case (Remf):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			// Go's math.Mod returns remainder after floating point division
 			rem := math.Mod(float64(math.Float32frombits(x)), float64(math.Float32frombits(y)))
 			uint32ToBytes(math.Float32bits(float32(rem)), bytes)
@@ -510,47 +509,47 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// Invert all bits, store result in arg
 			uint32ToBytes(^uint32FromBytes(bytes), bytes)
 		case (And):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			uint32ToBytes(x&y, bytes)
 		case (Or):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			uint32ToBytes(x|y, bytes)
 		case (Xor):
-			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, numArgs)
 			uint32ToBytes(x^y, bytes)
 		case (Jmp):
 			addr := oparg
-			if optional == 0 {
+			if numArgs == 0 {
 				addr = uint32FromBytes(vm.popStack())
 			}
 			*pc = register(addr)
 		case (Jz):
-			addr, value := getJumpAddrValue(vm, oparg, optional)
+			addr, value := getJumpAddrValue(vm, oparg, numArgs)
 			if value == 0 {
 				*pc = addr
 			}
 		case (Jnz):
-			addr, value := getJumpAddrValue(vm, oparg, optional)
+			addr, value := getJumpAddrValue(vm, oparg, numArgs)
 			if value != 0 {
 				*pc = addr
 			}
 		case (Jle):
-			addr, value := getJumpAddrValue(vm, oparg, optional)
+			addr, value := getJumpAddrValue(vm, oparg, numArgs)
 			if int32(value) <= 0 {
 				*pc = addr
 			}
 		case (Jl):
-			addr, value := getJumpAddrValue(vm, oparg, optional)
+			addr, value := getJumpAddrValue(vm, oparg, numArgs)
 			if int32(value) < 0 {
 				*pc = addr
 			}
 		case (Jge):
-			addr, value := getJumpAddrValue(vm, oparg, optional)
+			addr, value := getJumpAddrValue(vm, oparg, numArgs)
 			if int32(value) >= 0 {
 				*pc = addr
 			}
 		case (Jg):
-			addr, value := getJumpAddrValue(vm, oparg, optional)
+			addr, value := getJumpAddrValue(vm, oparg, numArgs)
 			if int32(value) > 0 {
 				*pc = addr
 			}

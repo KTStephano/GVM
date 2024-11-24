@@ -44,29 +44,35 @@ var (
 	}
 )
 
-const (
-	hasOptionalArg uint16 = 0x0001
-)
-
 // Flags should not use more than the first 24 bits
-func NewInstruction(code Bytecode, arg uint32, flags uint16) Instruction {
+func NewInstruction(code Bytecode, byteArg byte, arg uint32, flags uint16) Instruction {
 	return Instruction{
-		code:  code,
-		flags: flags,
-		arg:   arg,
+		code:    code,
+		flags:   flags,
+		byteArg: byteArg,
+		arg:     arg,
 	}
 }
 
 func (instr Instruction) String() string {
 	code := Bytecode(instr.code)
-	if code.RequiresOpArg() || (code.OptionalOpArg() && instr.flags > 0) {
+	numArgs := instr.flags & 0xff
+	if numArgs > 0 {
 		intArg := int32(instr.arg)
+		intArgStr := ""
 		if intArg < 0 {
 			// Add both the negative and unsigned version to the output
-			return fmt.Sprintf("%s %d (%d)", code.String(), intArg, instr.arg)
+			intArgStr = fmt.Sprintf("%d (%d)", intArg, instr.arg)
+		} else {
+			intArgStr = fmt.Sprintf("%d", instr.arg)
 		}
-		// Only include the unsigned version
-		return fmt.Sprintf("%s %d", code.String(), instr.arg)
+
+		if numArgs == 1 {
+			return fmt.Sprintf("%s %s", code, intArgStr)
+		} else {
+			// When this is the case the byte argument always goes first
+			return fmt.Sprintf("%s %d %s", code, instr.byteArg, intArgStr)
+		}
 	} else {
 		// No op arg - only include code string
 		return code.String()
@@ -89,7 +95,8 @@ func revertEscapeSeqReplacements(line string) string {
 	return line
 }
 
-func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][2]string, debugSym map[int]string) ([][2]string, error) {
+// Responsible for removing comments and whitespace and splitting an instruction into (instruction, argument0, argument1) triples
+func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][3]string, debugSym map[int]string) ([][3]string, error) {
 	line = comments.ReplaceAllString(line, "")
 	line = strings.TrimSpace(line)
 
@@ -117,26 +124,45 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][2]st
 		if debugSym != nil {
 			debugSym[len(lines)] = label
 			// For debug symbols we add a nop so that we can preserve this line in the code
-			return append(lines, [2]string{"nop", ""}), nil
+			return append(lines, [3]string{"nop", "", ""}), nil
 		} else {
 			return lines, nil
 		}
 	} else {
 		split := strings.Split(line, " ")
 		code := split[0]
-		args := ""
+		resultArgs := [2]string{}
 		if len(split) > 1 {
 			// Rejoin rest of split array into 1 string
-			args = strings.Join(split[1:], " ")
+			args := strings.Join(split[1:], " ")
 
 			// If it starts with a double or single quote, insert escape sequence replacements
 			if strings.HasPrefix(args, "'") || strings.HasPrefix(args, "\"") {
+				last := strings.LastIndex(args, "'")
+				if last <= 0 {
+					last = strings.LastIndex(args, "\"")
+				}
+
 				// Make sure the double or single quote also includes a terminating quote
-				if !strings.HasSuffix(args, "'") && !strings.HasSuffix(args, "\"") {
+				if last <= 0 {
 					return nil, errors.New("unterminated character or string")
 				}
 
-				args = insertEscapeSeqReplacements(args)
+				args = insertEscapeSeqReplacements(args[1:last])
+				// last+1 so that we can include the end double or single quote in the first result,
+				// but not in the second result
+				resultArgs[0] = args[:last+1]
+				resultArgs[1] = strings.TrimSpace(args[last+1:])
+			} else {
+				// Since we know the first arg wasn't quoted, remaining inputs should be numbers or labels
+				// which fit perfectly into 1 or 2 arguments
+				if len(split[1:]) > 2 {
+					return nil, errors.New("too many or invalid type of arguments to instruction")
+				}
+
+				for i := 0; i < len(split[1:]); i++ {
+					resultArgs[i] = strings.TrimSpace(split[1:][i])
+				}
 			}
 		}
 
@@ -145,8 +171,8 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][2]st
 		//
 		// We need to do the expansion in the preprocess stage or the labels
 		// will end up pointing to the wrong instructions
-		if code == Const.String() && strings.HasPrefix(args, "\"") && strings.HasSuffix(args, "\"") {
-			bytes := []byte(args)
+		if code == Const.String() && strings.HasPrefix(resultArgs[0], "\"") && strings.HasSuffix(resultArgs[0], "\"") {
+			bytes := []byte(resultArgs[0])
 			// Slice bytes to get rid of start and end quotes
 			bytes = bytes[1 : len(bytes)-1]
 
@@ -158,75 +184,110 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][2]st
 					debugSym[len(lines)] = revertEscapeSeqReplacements(fmt.Sprintf("%s '%c'", Byte.String(), bytes[i]))
 				}
 
-				lines = append(lines, [2]string{Byte.String(), fmt.Sprintf("%d", bytes[i])})
+				lines = append(lines, [3]string{Byte.String(), fmt.Sprintf("%d", bytes[i]), resultArgs[1]})
 			}
 		} else {
 			if debugSym != nil {
 				debugSym[len(lines)] = line
 			}
 
-			lines = append(lines, [2]string{code, args})
+			// Forward result args unchanged
+			lines = append(lines, [3]string{code, resultArgs[0], resultArgs[1]})
 		}
 
 		return lines, nil
 	}
 }
 
-func parseInputLine(line [2]string) (Instruction, error) {
+// Converts 1 piece of input into a uint32. In the case of floats, it will be the unsigned bit representation.
+//
+// This function should be called only after all labels have been removed from the source arguments.
+func inputArgToUint32(strArg string) (uint32, error) {
+	if strArg == "" {
+		return math.MaxUint32, errors.New("invalid")
+	}
+
+	// Character - replace with number
+	if strings.HasPrefix(strArg, "'") {
+		runes := []rune(strArg)
+		// first rune should be quote, then number, then end quote (len == 3)
+		if len(runes) != 3 {
+			return math.MaxUint32, errors.New("character is too large to fit into 32 bits")
+		}
+
+		return uint32(runes[1]), nil
+	} else {
+		// Likely a regular number or float
+		if strings.Contains(strArg, ".") {
+			arg, err := strconv.ParseFloat(strArg, 32)
+			if err != nil {
+				return math.MaxUint32, err
+			}
+
+			return math.Float32bits(float32(arg)), nil
+		} else {
+			var arg int64
+			var err error
+			base := 10
+			// Check for hex values
+			if strings.HasPrefix(strArg, "0x") {
+				base = 16
+				// Remove 0x from input
+				strArg = strings.Replace(strArg, "0x", "", 1)
+			}
+
+			arg, err = strconv.ParseInt(strArg, base, 32)
+			if err != nil {
+				return math.MaxUint32, err
+			}
+
+			return uint32(arg), nil
+		}
+	}
+}
+
+// Converts an input line from list of strings to a VM instruction
+//
+// This function should be called only after all labels have been removed from the source arguments
+func parseInputLine(line [3]string) (Instruction, error) {
 	code, ok := strToInstrMap[line[0]]
 	if !ok {
 		return Instruction{}, fmt.Errorf("unknown bytecode: %s", line[0])
 	}
 
-	strArg := line[1]
-	if strArg != "" {
-		if !code.RequiresOpArg() && !code.OptionalOpArg() {
-			return Instruction{}, fmt.Errorf("%s does not allow an op argument", code.String())
-		}
-
-		// Character - replace with number
-		if strings.HasPrefix(strArg, "'") {
-			runes := []rune(strArg)
-			// first rune should be quote, then number, then end quote (len == 3)
-			if len(runes) != 3 {
-				return Instruction{}, errors.New("character is too large to fit into 32 bits")
+	// Run through each argument and try to convert them to uint32
+	args := [2]uint32{}
+	numArgs := 0
+	for i, arg := range line[1:] {
+		if arg != "" {
+			numArgs++
+			n, err := inputArgToUint32(arg)
+			if err != nil {
+				return Instruction{}, err
 			}
 
-			return NewInstruction(code, uint32(runes[1]), hasOptionalArg), nil
-		} else {
-			// Likely a regular number or float
-			if strings.Contains(strArg, ".") {
-				arg, err := strconv.ParseFloat(strArg, 32)
-				if err != nil {
-					return Instruction{}, err
-				}
-
-				return NewInstruction(code, math.Float32bits(float32(arg)), hasOptionalArg), nil
-			} else {
-				var arg int64
-				var err error
-				base := 10
-				// Check for hex values
-				if strings.HasPrefix(strArg, "0x") {
-					base = 16
-					// Remove 0x from input
-					strArg = strings.Replace(strArg, "0x", "", 1)
-				}
-
-				arg, err = strconv.ParseInt(strArg, base, 32)
-				if err != nil {
-					return Instruction{}, err
-				}
-
-				return NewInstruction(code, uint32(arg), hasOptionalArg), nil
-			}
+			args[i] = n
 		}
+	}
+
+	// Make sure the number of arguments we received makes sense for this instruction
+	if maxArgs := code.NumRequiredOpArgs() + code.NumOptionalOpArgs(); numArgs < code.NumRequiredOpArgs() {
+		return Instruction{}, fmt.Errorf("%s wanted %d args but only got %d", code, code.NumRequiredOpArgs(), numArgs)
+	} else if numArgs > maxArgs {
+		return Instruction{}, fmt.Errorf("%s can only support a max of %d args but got %d", code, maxArgs, numArgs)
+	}
+
+	if numArgs == 0 {
+		return NewInstruction(code, 0, 0, 0), nil
+	} else if numArgs == 1 {
+		return NewInstruction(code, 0, args[0], uint16(numArgs)), nil
 	} else {
-		if code.RequiresOpArg() {
-			return Instruction{}, fmt.Errorf("%s requires an op argument", code.String())
+		// Make sure the first argument doesn't exceed the byte arg max
+		if args[0] > math.MaxUint8 {
+			return Instruction{}, fmt.Errorf("%s %d is too large to fit into a byte", code, args[0])
 		}
 
-		return NewInstruction(code, 0, 0), nil
+		return NewInstruction(code, byte(args[0]), args[1], uint16(numArgs)), nil
 	}
 }
 
@@ -259,7 +320,7 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 
 	// Maps from regex(label) -> address string
 	labels := make(map[*regexp.Regexp]string)
-	preprocessedLines := make([][2]string, 0)
+	preprocessedLines := make([][3]string, 0)
 
 	// First preprocess line to remove whitespace lines and convert labels
 	// into line numbers
@@ -277,7 +338,11 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 	for _, line := range preprocessedLines {
 		// Replace all labels with their instruction address
 		for label, lineNum := range labels {
-			line[1] = label.ReplaceAllString(line[1], lineNum)
+			for i := range line[1:] {
+				// i+1 since line[1:] reduces the length by 1, but the main array
+				// is unchanged in size so we're off by 1
+				line[i+1] = label.ReplaceAllString(line[i+1], lineNum)
+			}
 		}
 
 		instr, err := parseInputLine(line)

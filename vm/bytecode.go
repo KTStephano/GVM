@@ -119,30 +119,26 @@ func (b Bytecode) String() string {
 
 // True if the bytecode requires an argument to be paired
 // with it, such as const X
-func (b Bytecode) RequiresOpArg() bool {
-	return b == Const || b == Byte || b == Load || b == Store || b == Kstore
+func (b Bytecode) NumRequiredOpArgs() int {
+	if b == Const || b == Byte || b == Load || b == Store || b == Kstore {
+		return 1
+	} else {
+		return 0
+	}
 }
 
 // True if the bytecode can optionally accept an argument instead of
 // always inspecting the stack
-func (b Bytecode) OptionalOpArg() bool {
-	return b == Addi || b == Addf || b == Subi || b == Subf || b == Muli || b == Mulf || b == Divi || b == Divf ||
+func (b Bytecode) NumOptionalOpArgs() int {
+	if b == Addi || b == Addf || b == Subi || b == Subf || b == Muli || b == Mulf || b == Divi || b == Divf ||
 		b == Remu || b == Rems || b == Remf ||
 		b == And || b == Or || b == Xor ||
 		b == Push || b == Pop ||
-		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg
-}
-
-// Returns true if the bytecode is meant to push a value to the stack or overwrite the top
-// value on the stack
-func (b Bytecode) PushesToStack1Value() bool {
-	return b == Byte || b == Const ||
-		b == Load || b == Loadp8 || b == Loadp16 || b == Loadp32 ||
-		b == Addi || b == Addf || b == Subi || b == Subf || b == Muli || b == Mulf || b == Divi || b == Divf ||
-		b == Remu || b == Rems || b == Remf ||
-		b == Not || b == And || b == Or || b == Xor ||
-		b == Cmpu || b == Cmps || b == Cmpf ||
-		b == Readc
+		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg {
+		return 1
+	} else {
+		return 0
+	}
 }
 
 // This is called when package is first loaded (before main)
