@@ -13,9 +13,12 @@ import (
 )
 
 type Instruction struct {
-	code  uint16
-	flags uint16
-	arg   uint32
+	code Bytecode
+	// Can be used in the case where bytecode should accept 2 args - one should fit
+	// into a byte and the other can use a full 32 bits
+	byteArg byte
+	flags   uint16
+	arg     uint32
 }
 
 type Program struct {
@@ -42,17 +45,13 @@ var (
 )
 
 const (
-	hasOptionalArg uint16 = 0x01
+	hasOptionalArg uint16 = 0x0001
 )
 
-func FormatInstructionCode(code Bytecode, flags uint32) uint32 {
-	return uint32(code) | (flags << 8)
-}
-
 // Flags should not use more than the first 24 bits
-func NewInstruction(modifier byte, code Bytecode, arg uint32, flags uint16) Instruction {
+func NewInstruction(code Bytecode, arg uint32, flags uint16) Instruction {
 	return Instruction{
-		code:  (uint16(modifier) << 8) | uint16(code),
+		code:  code,
 		flags: flags,
 		arg:   arg,
 	}
@@ -193,7 +192,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 				return Instruction{}, errors.New("character is too large to fit into 32 bits")
 			}
 
-			return NewInstruction(0, code, uint32(runes[1]), hasOptionalArg), nil
+			return NewInstruction(code, uint32(runes[1]), hasOptionalArg), nil
 		} else {
 			// Likely a regular number or float
 			if strings.Contains(strArg, ".") {
@@ -202,7 +201,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 					return Instruction{}, err
 				}
 
-				return NewInstruction(0, code, math.Float32bits(float32(arg)), hasOptionalArg), nil
+				return NewInstruction(code, math.Float32bits(float32(arg)), hasOptionalArg), nil
 			} else {
 				var arg int64
 				var err error
@@ -219,7 +218,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 					return Instruction{}, err
 				}
 
-				return NewInstruction(0, code, uint32(arg), hasOptionalArg), nil
+				return NewInstruction(code, uint32(arg), hasOptionalArg), nil
 			}
 		}
 	} else {
@@ -227,13 +226,7 @@ func parseInputLine(line [2]string) (Instruction, error) {
 			return Instruction{}, fmt.Errorf("%s requires an op argument", code.String())
 		}
 
-		return NewInstruction(0, code, 0, 0), nil
-	}
-}
-
-// Attempts to merge adjacent instructions if possible for performance during execution
-func mergeInstructions(program []Instruction) {
-	for i := 0; i < len(program)-1; i++ {
+		return NewInstruction(code, 0, 0), nil
 	}
 }
 
@@ -304,9 +297,6 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 			}
 		}
 	}
-
-	// Perform instruction merging to possibly improve performance
-	mergeInstructions(instructions)
 
 	return Program{instructions: instructions, debugSymMap: debugSymMap}, nil
 }

@@ -163,7 +163,6 @@ const (
 var (
 	errProgramFinished    = errors.New("ran out of instructions")
 	errSegmentationFault  = errors.New("segmentation fault")
-	errIllegalOperation   = errors.New("illegal operation at instruction")
 	errDivisionByZero     = errors.New("division by zero")
 	errUnknownInstruction = errors.New("instruction not recognized")
 	errIO                 = errors.New("input-output error")
@@ -381,50 +380,50 @@ func (vm *VM) execInstructions(singleStep bool) {
 		}
 
 		instr := vm.program[*vm.pc]
-		code, flags := Bytecode(instr.code), instr.flags
+		code, flags := instr.code, instr.flags
 		oparg := instr.arg
 		optional := flags & hasOptionalArg
 
 		*pc++
 
 		switch code {
-		case Nop:
-		case Byte:
+		case (Nop):
+		case (Byte):
 			vm.pushStackByte(oparg)
-		case Const:
+		case (Const):
 			vm.pushStack(oparg)
-		case Load:
+		case (Load):
 			vm.pushStack(vm.registers[oparg])
-		case Store:
+		case (Store):
 			regVal := uint32FromBytes(vm.popStack())
 			vm.registers[oparg] = register(regVal)
-		case Kstore:
+		case (Kstore):
 			regVal := uint32FromBytes(vm.peekStack())
 			vm.registers[oparg] = register(regVal)
-		case Loadp8:
+		case (Loadp8):
 			bytes := vm.peekStack()
 			addr := uint32FromBytes(bytes)
 			uint32ToBytes(uint32(vm.stack[addr]), bytes)
-		case Loadp16:
+		case (Loadp16):
 			bytes := vm.peekStack()
 			addr := uint32FromBytes(bytes)
 			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.stack[addr:])), bytes)
-		case Loadp32:
+		case (Loadp32):
 			bytes := vm.peekStack()
 			addr := uint32FromBytes(bytes)
 			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.stack[addr:])), bytes)
-		case Storep8:
+		case (Storep8):
 			addrBytes, valueBytes := vm.popStackx2()
 			addr := uint32FromBytes(addrBytes)
 			vm.stack[addr] = valueBytes[0]
-		case Storep16:
+		case (Storep16):
 			addrBytes, valueBytes := vm.popStackx2()
 			addr := uint32FromBytes(addrBytes)
 
 			// unrolled loop
 			vm.stack[addr] = valueBytes[0]
 			vm.stack[addr+1] = valueBytes[1]
-		case Storep32:
+		case (Storep32):
 			addrBytes, valueBytes := vm.popStackx2()
 			addr := uint32FromBytes(addrBytes)
 
@@ -433,40 +432,35 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.stack[addr+1] = valueBytes[1]
 			vm.stack[addr+2] = valueBytes[2]
 			vm.stack[addr+3] = valueBytes[3]
-		case Push:
+		case (Push):
 			bytes := getPushPopValue(vm, oparg, optional)
 			*vm.sp = *vm.sp - register(bytes)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
-		case Pop:
+		case (Pop):
 			bytes := getPushPopValue(vm, oparg, optional)
 			*vm.sp = *vm.sp + register(bytes)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
-		case Addi:
-			if optional == 0 {
-				x, y := vm.popPeekStack()
-				uint32ToBytes(uint32FromBytes(x)+uint32FromBytes(y), y)
-			} else {
-				x := vm.peekStack()
-				uint32ToBytes(uint32FromBytes(x)+oparg, x)
-			}
-		case Addf:
+		case (Addi):
+			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
+			uint32ToBytes(x+y, bytes)
+		case (Addf):
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			float32ToBytes(math.Float32frombits(x)+math.Float32frombits(y), bytes)
-		case Subi:
+		case (Subi):
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			uint32ToBytes(x-y, bytes)
-		case Subf:
+		case (Subf):
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			float32ToBytes(math.Float32frombits(x)-math.Float32frombits(y), bytes)
-		case Muli:
+		case (Muli):
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			uint32ToBytes(x*y, bytes)
-		case Mulf:
+		case (Mulf):
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			float32ToBytes(math.Float32frombits(x)*math.Float32frombits(y), bytes)
-		case Divi:
+		case (Divi):
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
@@ -477,10 +471,10 @@ func (vm *VM) execInstructions(singleStep bool) {
 			}
 
 			uint32ToBytes(x/y, bytes)
-		case Divf:
+		case (Divf):
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			float32ToBytes(math.Float32frombits(x)/math.Float32frombits(y), bytes)
-		case Remu:
+		case (Remu):
 			var resultVal uint32
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			// For ints we need to check for div by 0
@@ -493,7 +487,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 			resultVal, vm.errcode = arithRemi(x, y)
 			uint32ToBytes(resultVal, bytes)
-		case Rems:
+		case (Rems):
 			var resultVal uint32
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			// For ints we need to check for div by 0
@@ -506,88 +500,88 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 			resultVal, vm.errcode = arithRemi(int32(x), int32(y))
 			uint32ToBytes(resultVal, bytes)
-		case Remf:
+		case (Remf):
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			// Go's math.Mod returns remainder after floating point division
 			rem := math.Mod(float64(math.Float32frombits(x)), float64(math.Float32frombits(y)))
 			uint32ToBytes(math.Float32bits(float32(rem)), bytes)
-		case Not:
+		case (Not):
 			bytes := vm.peekStack()
 			// Invert all bits, store result in arg
 			uint32ToBytes(^uint32FromBytes(bytes), bytes)
-		case And:
+		case (And):
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			uint32ToBytes(x&y, bytes)
-		case Or:
+		case (Or):
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			uint32ToBytes(x|y, bytes)
-		case Xor:
+		case (Xor):
 			x, y, bytes := getArithLogicValsPeek(vm, oparg, optional)
 			uint32ToBytes(x^y, bytes)
-		case Jmp:
+		case (Jmp):
 			addr := oparg
 			if optional == 0 {
 				addr = uint32FromBytes(vm.popStack())
 			}
 			*pc = register(addr)
-		case Jz:
+		case (Jz):
 			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if value == 0 {
 				*pc = addr
 			}
-		case Jnz:
+		case (Jnz):
 			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if value != 0 {
 				*pc = addr
 			}
-		case Jle:
+		case (Jle):
 			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if int32(value) <= 0 {
 				*pc = addr
 			}
-		case Jl:
+		case (Jl):
 			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if int32(value) < 0 {
 				*pc = addr
 			}
-		case Jge:
+		case (Jge):
 			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if int32(value) >= 0 {
 				*pc = addr
 			}
-		case Jg:
+		case (Jg):
 			addr, value := getJumpAddrValue(vm, oparg, optional)
 			if int32(value) > 0 {
 				*pc = addr
 			}
-		case Cmpu:
+		case (Cmpu):
 			x, y := vm.popPeekStack()
 			// Overwrite y bytes with result of compare
 			uint32ToBytes(compare(uint32FromBytes(x), uint32FromBytes(y)), y)
-		case Cmps:
+		case (Cmps):
 			x, y := vm.popPeekStack()
 			// Overwrite y bytes with result of compare
 			uint32ToBytes(compare(int32FromBytes(x), int32FromBytes(y)), y)
-		case Cmpf:
+		case (Cmpf):
 			x, y := vm.popPeekStack()
 			// Overwrite y bytes with result of compare
 			uint32ToBytes(compare(float32FromBytes(x), float32FromBytes(y)), y)
-		case Writeb:
+		case (Writeb):
 			addr := uint32FromBytes(vm.popStack())
 			vm.stdout.WriteByte(vm.stack[addr])
-		case Writec:
+		case (Writec):
 			character := rune(uint32FromBytes(vm.popStack()))
 			vm.stdout.WriteRune(character)
-		case Flush:
+		case (Flush):
 			vm.stdout.Flush()
-		case Readc:
+		case (Readc):
 			character, _, err := vm.stdin.ReadRune()
 			if err != nil {
 				vm.errcode = errIO
 				return
 			}
 			vm.pushStack(uint32(character))
-		case Exit:
+		case (Exit):
 			// Sets the pc to be one after the last instruction
 			*pc = register(len(vm.program))
 		default:
