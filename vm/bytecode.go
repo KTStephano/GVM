@@ -283,8 +283,17 @@ func (b Bytecode) String() string {
 
 // True if the bytecode deals with register load/store/arithmetic/logic
 func (b Bytecode) IsRegisterOp() bool {
-	return b == Load || b == Store || b == Kstore ||
-		b == Raddi || b == Raddf || b == Rsubi || b == Rsubf || b == Rmuli || b == Rmulf || b == Rdivi || b == Rdivf ||
+	return b == Load || b.IsRegisterWriteOp()
+}
+
+// Returns true for all instructions that write to a register
+func (b Bytecode) IsRegisterWriteOp() bool {
+	return b == Store || b == Kstore || b.IsRegisterReadWriteOp()
+}
+
+// Returns true for all instructions that both read and write to a register
+func (b Bytecode) IsRegisterReadWriteOp() bool {
+	return b == Raddi || b == Raddf || b == Rsubi || b == Rsubf || b == Rmuli || b == Rmulf || b == Rdivi || b == Rdivf ||
 		b == Rshiftl || b == Rshiftr
 }
 
@@ -305,8 +314,7 @@ func (b Bytecode) NumOptionalOpArgs() int {
 		b == Shiftl || b == Shiftr ||
 		b == Push || b == Pop ||
 		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg ||
-		b == Raddi || b == Raddf || b == Rsubi || b == Rsubf || b == Rmuli || b == Rmulf || b == Rdivi || b == Rdivf ||
-		b == Rshiftl || b == Rshiftr {
+		b.IsRegisterReadWriteOp() {
 		return 1
 	} else {
 		return 0

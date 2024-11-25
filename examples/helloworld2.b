@@ -1,8 +1,17 @@
-    byte 0
-    const "Hello world!\n"  // push string onto stack with trailing 0 byte
-    load 1                  // load stack top address which contains the start of our string
-    const done              // address we want print function to return to
-    jmp print
+    load 1
+    store 3                 // store start stack pointer in register[3]
+    const "Hello world!\n"  // store string on stack
+    load 1
+    store 2                 // store new stack pointer in register[2]
 
-done:
+loop:
+    load 2                  // load current string address
+    loadp8                  // *stack[0] 1 byte read
+    writec
+    load 3
+    raddi 2 1               // register[2] += 1, store result address on stack
+    cmpu                    // compare new address in register[2] with end address in register[3]
+    jl loop                 // if curr address still less than end address, go to loop
+    flush
     exit
+

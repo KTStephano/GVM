@@ -200,16 +200,6 @@ func (vm *VM) pushStack(value register) {
 	uint32ToBytes(value, vm.stack[*vm.sp:])
 }
 
-func compare[T numeric32](x, y T) uint32 {
-	if x < y {
-		return math.MaxUint32 // -1 when converted to int32
-	} else if x > y {
-		return 1
-	} else {
-		return 0
-	}
-}
-
 // Peeks the first item off the stack, converts it to uint32 and returns the stack
 // bytes that are safe to write to
 func getStackOneInput(vm *VM) (uint32, []byte) {
@@ -222,6 +212,16 @@ func getStackOneInput(vm *VM) (uint32, []byte) {
 func getStackTwoInputs(vm *VM) (uint32, uint32, []byte) {
 	x, y := vm.popPeekStack()
 	return uint32FromBytes(x), uint32FromBytes(y), y
+}
+
+func compare[T numeric32](x, y T) uint32 {
+	if x < y {
+		return math.MaxUint32 // -1 when converted to int32
+	} else if x > y {
+		return 1
+	} else {
+		return 0
+	}
 }
 
 func arithRemi[T integer32](x, y T) (uint32, error) {

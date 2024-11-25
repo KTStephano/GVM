@@ -490,10 +490,16 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 	// from being written over by the input code)
 	for i, instr := range instructions {
 		code := Bytecode(instr.code & 0xff)
-		errVal := fmt.Errorf("illegal/invalid register write at %d: %s", i, instr)
 		if code.IsRegisterOp() {
-			if instr.register < 2 || instr.register > uint16(numRegisters) {
-				return Program{}, errVal
+			// Make sure the register read/write is within bounds
+			if instr.register > uint16(numRegisters) {
+				return Program{}, fmt.Errorf("out of bounds register write at %d: %s", i, instr)
+			}
+		}
+
+		if code.IsRegisterWriteOp() {
+			if instr.register < 2 {
+				return Program{}, fmt.Errorf("illegal register write (reg < 2) at %d: %s", i, instr)
 			}
 		}
 	}
