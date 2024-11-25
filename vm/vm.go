@@ -210,14 +210,18 @@ func compare[T numeric32](x, y T) uint32 {
 	}
 }
 
-func getStackInputsNoArgs(vm *VM) (uint32, uint32, []byte) {
-	x, y := vm.popPeekStack()
-	return uint32FromBytes(x), uint32FromBytes(y), y
-}
-
-func getStackInputOneArg(vm *VM) (uint32, []byte) {
+// Peeks the first item off the stack, converts it to uint32 and returns the stack
+// bytes that are safe to write to
+func getStackOneInput(vm *VM) (uint32, []byte) {
 	x := vm.peekStack()
 	return uint32FromBytes(x), x
+}
+
+// Pops the first item off the stack, peeks the second
+// Converts both inputs to uint32 and returns the stack bytes that are safe to write to
+func getStackTwoInputs(vm *VM) (uint32, uint32, []byte) {
+	x, y := vm.popPeekStack()
+	return uint32FromBytes(x), uint32FromBytes(y), y
 }
 
 func arithRemi[T integer32](x, y T) (uint32, error) {
@@ -228,15 +232,19 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 	return uint32(x % y), nil
 }
 
-// This is considered a tight loop. It's ok to move certain things to instructions
-// if the instructions are very simple (meaning Go's inlining rules take over), but
-// otherwise it's best to try and embed the logic directly into the switch statement.
+// Instruction fetch, decode+execute
+//
+// This is considered a tight loop. Some of the normal programming conveniences and patterns
+// don't work well here since we need to be able to execute this as many times per second
+// as possible (hundreds of millions+ times per second). Even the overhead of a true function call (non-inlined) is too much.
+//
+// It's ok to move certain things to functions if the instructions are very simple (meaning Go's inlining rules take over),
+// but otherwise it's best to try and embed the logic directly into the switch statement.
 //
 // singleStep can be set when in debug mode so that this function runs 1 instruction
 // and then returns to caller.
 //
-// The current design attempts to balance performance, readability and code reuse. There
-// is more duplication than normal in an attempt to keep everything inlined.
+// The current design of this function attempts to balance performance, readability and code reuse.
 func (vm *VM) execInstructions(singleStep bool) {
 	for {
 		pc := vm.pc
@@ -247,7 +255,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 		instr := vm.program[*vm.pc]
 		code := instr.code
-		opbyte := uint32(instr.byteArg)
+		opreg := instr.register
 		oparg := instr.arg
 
 		*pc++
@@ -259,13 +267,13 @@ func (vm *VM) execInstructions(singleStep bool) {
 		case constOneArg:
 			vm.pushStack(oparg)
 		case loadOneArg:
-			vm.pushStack(vm.registers[oparg])
+			vm.pushStack(vm.registers[opreg])
 		case storeOneArg:
 			regVal := uint32FromBytes(vm.popStack())
-			vm.registers[oparg] = register(regVal)
+			vm.registers[opreg] = register(regVal)
 		case kstoreOneArg:
 			regVal := uint32FromBytes(vm.peekStack())
-			vm.registers[oparg] = register(regVal)
+			vm.registers[opreg] = register(regVal)
 		case loadp8NoArgs:
 			bytes := vm.peekStack()
 			addr := uint32FromBytes(bytes)
@@ -299,11 +307,13 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.stack[addr+2] = valueBytes[2]
 			vm.stack[addr+3] = valueBytes[3]
 		case pushNoArgs:
+			// push with no args, meaning we pull # bytes from the stack
 			bytes := vm.popStackUint32()
 			*vm.sp -= register(bytes)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
 		case pushOneArg:
+			// push <constant> meaning the byte value is inlined
 			*vm.sp -= register(oparg)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.stack[*vm.sp]
@@ -319,49 +329,49 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 		// Begin add instructions
 		case addiNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(x+y, bytes)
 		case addiOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			uint32ToBytes(x+oparg, bytes)
 		case addfNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			float32ToBytes(math.Float32frombits(x)+math.Float32frombits(y), bytes)
 		case addfOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			float32ToBytes(math.Float32frombits(x)+math.Float32frombits(oparg), bytes)
 
 		// Begin sub instructions
 		case subiNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(x-y, bytes)
 		case subiOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			uint32ToBytes(x-oparg, bytes)
 		case subfNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			float32ToBytes(math.Float32frombits(x)-math.Float32frombits(y), bytes)
 		case subfOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			float32ToBytes(math.Float32frombits(x)-math.Float32frombits(oparg), bytes)
 
 		// Begin mul instructions
 		case muliNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(x*y, bytes)
 		case muliOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			uint32ToBytes(x*oparg, bytes)
 		case mulfNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			float32ToBytes(math.Float32frombits(x)*math.Float32frombits(y), bytes)
 		case mulfOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			float32ToBytes(math.Float32frombits(x)*math.Float32frombits(oparg), bytes)
 
 		// Begin div instructions
 		case diviNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
 			// and its discussion
@@ -380,78 +390,66 @@ func (vm *VM) execInstructions(singleStep bool) {
 				return
 			}
 
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			uint32ToBytes(x/oparg, bytes)
 		case divfNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			float32ToBytes(math.Float32frombits(x)/math.Float32frombits(y), bytes)
 		case divfOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			float32ToBytes(math.Float32frombits(x)/math.Float32frombits(oparg), bytes)
 
 		// Begin radd instructions
 		case raddiOneArg:
-			x, bytes := getStackInputOneArg(vm)
-			v := vm.registers[oparg] + x
-			vm.registers[oparg] = v
-			uint32ToBytes(v, bytes)
+			x, bytes := getStackOneInput(vm)
+			vm.registers[opreg] += x
+			uint32ToBytes(vm.registers[opreg], bytes)
 		case raddiTwoArgs:
-			v := vm.registers[opbyte] + oparg
-			vm.registers[opbyte] = v
-			vm.pushStack(v)
+			vm.registers[opreg] += oparg
+			vm.pushStack(vm.registers[opreg])
 		case raddfOneArg:
-			x, bytes := getStackInputOneArg(vm)
-			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) + math.Float32frombits(x))
-			vm.registers[oparg] = v
-			uint32ToBytes(v, bytes)
+			x, bytes := getStackOneInput(vm)
+			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) + math.Float32frombits(x))
+			uint32ToBytes(vm.registers[opreg], bytes)
 		case raddfTwoArgs:
-			v := math.Float32bits(math.Float32frombits(vm.registers[opbyte]) + math.Float32frombits(oparg))
-			vm.registers[opbyte] = v
-			vm.pushStack(v)
+			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) + math.Float32frombits(oparg))
+			vm.pushStack(vm.registers[opreg])
 
 		// Begin rsub instructions
 		case rsubiOneArg:
-			x, bytes := getStackInputOneArg(vm)
-			v := vm.registers[oparg] - x
-			vm.registers[oparg] = v
-			uint32ToBytes(v, bytes)
+			x, bytes := getStackOneInput(vm)
+			vm.registers[opreg] -= x
+			uint32ToBytes(vm.registers[opreg], bytes)
 		case rsubiTwoArgs:
-			v := vm.registers[opbyte] - oparg
-			vm.registers[opbyte] = v
-			vm.pushStack(v)
+			vm.registers[opreg] -= oparg
+			vm.pushStack(vm.registers[opreg])
 		case rsubfOneArg:
-			x, bytes := getStackInputOneArg(vm)
-			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) - math.Float32frombits(x))
-			vm.registers[oparg] = v
-			uint32ToBytes(v, bytes)
+			x, bytes := getStackOneInput(vm)
+			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) - math.Float32frombits(x))
+			uint32ToBytes(vm.registers[opreg], bytes)
 		case rsubfTwoArgs:
-			v := math.Float32bits(math.Float32frombits(vm.registers[opbyte]) - math.Float32frombits(oparg))
-			vm.registers[opbyte] = v
-			vm.pushStack(v)
+			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) - math.Float32frombits(oparg))
+			vm.pushStack(vm.registers[opreg])
 
 		// Begin rmul instructions
 		case rmuliOneArg:
-			x, bytes := getStackInputOneArg(vm)
-			v := vm.registers[oparg] * x
-			vm.registers[oparg] = v
-			uint32ToBytes(v, bytes)
+			x, bytes := getStackOneInput(vm)
+			vm.registers[opreg] *= x
+			uint32ToBytes(vm.registers[opreg], bytes)
 		case rmuliTwoArgs:
-			v := vm.registers[opbyte] * oparg
-			vm.registers[opbyte] = v
-			vm.pushStack(v)
+			vm.registers[opreg] *= oparg
+			vm.pushStack(vm.registers[opreg])
 		case rmulfOneArg:
-			x, bytes := getStackInputOneArg(vm)
-			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) * math.Float32frombits(x))
-			vm.registers[oparg] = v
-			uint32ToBytes(v, bytes)
+			x, bytes := getStackOneInput(vm)
+			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) * math.Float32frombits(x))
+			uint32ToBytes(vm.registers[opreg], bytes)
 		case rmulfTwoArgs:
-			v := math.Float32bits(math.Float32frombits(vm.registers[opbyte]) * math.Float32frombits(oparg))
-			vm.registers[opbyte] = v
-			vm.pushStack(v)
+			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) * math.Float32frombits(oparg))
+			vm.pushStack(vm.registers[opreg])
 
 		// Begin rdiv instructions
 		case rdiviOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
 			// and its discussion
@@ -460,9 +458,8 @@ func (vm *VM) execInstructions(singleStep bool) {
 				return
 			}
 
-			v := vm.registers[oparg] / x
-			vm.registers[oparg] = v
-			uint32ToBytes(v, bytes)
+			vm.registers[opreg] /= x
+			uint32ToBytes(vm.registers[opreg], bytes)
 		case rdiviTwoArgs:
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
@@ -472,115 +469,108 @@ func (vm *VM) execInstructions(singleStep bool) {
 				return
 			}
 
-			v := vm.registers[opbyte] / oparg
-			vm.registers[opbyte] = v
-			vm.pushStack(v)
+			vm.registers[opreg] /= oparg
+			vm.pushStack(vm.registers[opreg])
 		case rdivfOneArg:
-			x, bytes := getStackInputOneArg(vm)
-			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) / math.Float32frombits(x))
-			vm.registers[oparg] = v
-			uint32ToBytes(v, bytes)
+			x, bytes := getStackOneInput(vm)
+			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) / math.Float32frombits(x))
+			uint32ToBytes(vm.registers[opreg], bytes)
 		case rdivfTwoArgs:
-			v := math.Float32bits(math.Float32frombits(vm.registers[opbyte]) / math.Float32frombits(oparg))
-			vm.registers[opbyte] = v
-			vm.pushStack(v)
+			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) / math.Float32frombits(oparg))
+			vm.pushStack(vm.registers[opreg])
 
 		// Begin register shift instructions
 		case rshiftLOneArg:
-			x, bytes := getStackInputOneArg(vm)
-			v := vm.registers[oparg] << x
-			vm.registers[oparg] = v
-			uint32ToBytes(v, bytes)
+			x, bytes := getStackOneInput(vm)
+			vm.registers[opreg] <<= x
+			uint32ToBytes(vm.registers[opreg], bytes)
 		case rshiftLTwoArgs:
-			v := vm.registers[opbyte] << oparg
-			vm.registers[opbyte] = v
-			vm.pushStack(v)
+			vm.registers[opreg] <<= oparg
+			vm.pushStack(vm.registers[opreg])
 
 		case rshiftROneArg:
-			x, bytes := getStackInputOneArg(vm)
-			v := vm.registers[oparg] >> x
-			vm.registers[oparg] = v
-			uint32ToBytes(v, bytes)
+			x, bytes := getStackOneInput(vm)
+			vm.registers[opreg] >>= x
+			uint32ToBytes(vm.registers[opreg], bytes)
 
 		case rshiftRTwoargs:
-			v := vm.registers[opbyte] >> oparg
-			vm.registers[opbyte] = v
-			vm.pushStack(v)
+			vm.registers[opreg] >>= oparg
+			vm.pushStack(vm.registers[opreg])
 
 		// Begin remainder instructions
 		case remuNoArgs:
 			var resultVal uint32
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			resultVal, vm.errcode = arithRemi(x, y)
 			uint32ToBytes(resultVal, bytes)
 		case remuOneArg:
 			var resultVal uint32
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			resultVal, vm.errcode = arithRemi(x, oparg)
 			uint32ToBytes(resultVal, bytes)
 
 		case remsNoArgs:
 			var resultVal uint32
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			resultVal, vm.errcode = arithRemi(int32(x), int32(y))
 			uint32ToBytes(resultVal, bytes)
 		case remsOneArg:
 			var resultVal uint32
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			resultVal, vm.errcode = arithRemi(int32(x), int32(oparg))
 			uint32ToBytes(resultVal, bytes)
 
 		case remfNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			// Go's math.Mod returns remainder after floating point division
 			rem := math.Mod(float64(math.Float32frombits(x)), float64(math.Float32frombits(y)))
 			uint32ToBytes(math.Float32bits(float32(rem)), bytes)
 		case remfOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			// Go's math.Mod returns remainder after floating point division
 			rem := math.Mod(float64(math.Float32frombits(x)), float64(math.Float32frombits(oparg)))
 			uint32ToBytes(math.Float32bits(float32(rem)), bytes)
 
 		// Begin logic instructions
 		case notNoArgs:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			// Invert all bits, store result on stack
 			uint32ToBytes(^x, bytes)
 
 		case andNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(x&y, bytes)
 		case andOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			uint32ToBytes(x&oparg, bytes)
 
 		case orNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(x|y, bytes)
 		case orOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			uint32ToBytes(x|oparg, bytes)
 
 		case xorNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(x^y, bytes)
 		case xorOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			uint32ToBytes(x^oparg, bytes)
 
 		// Begin left/right shift instructions
 		case shiftLNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(x<<y, bytes)
 		case shiftLOneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			uint32ToBytes(x<<oparg, bytes)
 
 		case shiftRNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(x>>y, bytes)
 		case shiftROneArg:
-			x, bytes := getStackInputOneArg(vm)
+			x, bytes := getStackOneInput(vm)
 			uint32ToBytes(x>>oparg, bytes)
 
 		// Begin jump instructions
@@ -657,13 +647,13 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 		// Begin comparison instructions
 		case cmpuNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(compare(x, y), bytes)
 		case cmpsNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(compare(int32(x), int32(y)), bytes)
 		case cmpfNoArgs:
-			x, y, bytes := getStackInputsNoArgs(vm)
+			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(compare(math.Float32frombits(x), math.Float32frombits(y)), bytes)
 
 		// Begin console IO instructions

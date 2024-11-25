@@ -12,14 +12,14 @@ import (
 	"unicode"
 )
 
+// Laid out so that sizeof(Instruction) == 8 is possible
 type Instruction struct {
 	// Code embeds upper 8 bits as number of op args, lower 8 bits as bytecode instruction
 	code uint16
-	// Can be used in the case where bytecode should accept 2 args - one should fit
-	// into a byte and the other can use a full 32 bits
-	byteArg byte
-	flags   byte
-	arg     uint32
+	// Register is used for things like load, store, raddi, etc.
+	register uint16
+	// Normal 32-bit argument for inlining constants
+	arg uint32
 }
 
 type Program struct {
@@ -158,35 +158,52 @@ var (
 	}
 )
 
-// Flags should not use more than the first 24 bits
-func NewInstruction(numArgs byte, code Bytecode, byteArg byte, arg uint32, flags byte) Instruction {
+// Instructions are made up of:
+//
+//		first 16 bits => numArgs, bytecode
+//		next 16 bits => register index if applicable
+//		next 32 bits => oparg
+//
+//	 total => 64 bits per instruction (fixed size)
+func NewInstruction(numArgs byte, code Bytecode, register uint16, arg uint32) Instruction {
 	return Instruction{
-		code:    (uint16(numArgs) << 8) | uint16(code),
-		flags:   flags,
-		byteArg: byteArg,
-		arg:     arg,
+		code:     (uint16(numArgs) << 8) | uint16(code),
+		register: register,
+		arg:      arg,
 	}
 }
 
 func (instr Instruction) String() string {
+	// Lower 8 bits are the bytecode, upper 8 bits are the number of op args
 	code := Bytecode(instr.code & 0xff)
 	numArgs := (instr.code & 0xff00) >> 8
 	if numArgs > 0 {
 		intArg := int32(instr.arg)
 		intArgStr := ""
-		if intArg < 0 {
-			// Add both the negative and unsigned version to the output
-			intArgStr = fmt.Sprintf("%d (%d)", intArg, instr.arg)
-		} else {
-			intArgStr = fmt.Sprintf("%d", instr.arg)
+		// Move the set int arg into a function since we call of from 2 separate
+		// code branches
+		setIntArgStr := func() {
+			if intArg < 0 {
+				// Add both the negative and unsigned version to the output
+				intArgStr = fmt.Sprintf(" %d (%d)", intArg, instr.arg)
+			} else {
+				intArgStr = fmt.Sprintf(" %d", instr.arg)
+			}
 		}
 
-		if numArgs == 1 {
-			return fmt.Sprintf("%s %s", code, intArgStr)
-		} else {
-			// When this is the case the byte argument always goes first
-			return fmt.Sprintf("%s %d %s", code, instr.byteArg, intArgStr)
+		registerStr := ""
+		if code.IsRegisterOp() {
+			registerStr = fmt.Sprintf(" %d", instr.register)
+
+			// Some instructions accept both a register and an additional argument
+			if numArgs > 1 {
+				setIntArgStr()
+			}
+		} else if numArgs > 1 {
+			setIntArgStr()
 		}
+
+		return fmt.Sprintf("%s%s%s", code, registerStr, intArgStr)
 	} else {
 		// No op arg - only include code string
 		return code.String()
@@ -394,17 +411,13 @@ func parseInputLine(line [3]string) (Instruction, error) {
 		return Instruction{}, fmt.Errorf("%s can only support a max of %d args but got %d", code, maxArgs, numArgs)
 	}
 
-	if numArgs == 0 {
-		return NewInstruction(0, code, 0, 0, 0), nil
-	} else if numArgs == 1 {
-		return NewInstruction(1, code, 0, args[0], 0), nil
+	if code.IsRegisterOp() {
+		// Register instructions accept a minimum of 1 16-bit argument, but some also have an optional
+		// 2nd 32-bit argument
+		return NewInstruction(byte(numArgs), code, uint16(args[0]), args[1]), nil
 	} else {
-		// Make sure the first argument doesn't exceed the byte arg max
-		if args[0] > math.MaxUint8 {
-			return Instruction{}, fmt.Errorf("%s %d is too large to fit into a byte", code, args[0])
-		}
-
-		return NewInstruction(2, code, byte(args[0]), args[1], 0), nil
+		// Non-register instructions only accept 1 32-bit argument
+		return NewInstruction(byte(numArgs), code, 0, args[0]), nil
 	}
 }
 
@@ -477,26 +490,9 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 	// from being written over by the input code)
 	for i, instr := range instructions {
 		code := Bytecode(instr.code & 0xff)
-		numArgs := (instr.code & 0xff00) >> 8
-		errVal := fmt.Errorf("illegal register write at %d: %s", i, instr)
-		if code == Store || code == Kstore {
-			if instr.arg < 2 {
-				return Program{}, errVal
-			}
-		} else if code == Raddi || code == Raddf ||
-			code == Rsubi || code == Rsubf ||
-			code == Rmuli || code == Rmulf ||
-			code == Rdivi || code == Rdivf ||
-			code == Rshiftl || code == Rshiftr {
-
-			regIdx := instr.arg
-			if numArgs > 1 {
-				// When number of arguments > 1 the register is moved into the byteArg field to
-				// free up the 32-bit entry for the inline constant
-				regIdx = uint32(instr.byteArg)
-			}
-
-			if regIdx < 2 {
+		errVal := fmt.Errorf("illegal/invalid register write at %d: %s", i, instr)
+		if code.IsRegisterOp() {
+			if instr.register < 2 || instr.register > uint16(numRegisters) {
 				return Program{}, errVal
 			}
 		}

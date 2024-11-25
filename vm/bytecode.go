@@ -281,11 +281,16 @@ func (b Bytecode) String() string {
 	return str
 }
 
+// True if the bytecode deals with register load/store/arithmetic/logic
+func (b Bytecode) IsRegisterOp() bool {
+	return b == Load || b == Store || b == Kstore ||
+		b == Raddi || b == Raddf || b == Rsubi || b == Rsubf || b == Rmuli || b == Rmulf || b == Rdivi || b == Rdivf ||
+		b == Rshiftl || b == Rshiftr
+}
+
 // True if the bytecode requires an argument to be paired with it, such as const X
 func (b Bytecode) NumRequiredOpArgs() int {
-	if b == Const || b == Byte || b == Load || b == Store || b == Kstore ||
-		b == Raddi || b == Raddf || b == Rsubi || b == Rsubf || b == Rmuli || b == Rmulf || b == Rdivi || b == Rdivf ||
-		b == Rshiftl || b == Rshiftr {
+	if b == Const || b == Byte || b.IsRegisterOp() {
 		return 1
 	} else {
 		return 0

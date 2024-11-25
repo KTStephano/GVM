@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 )
@@ -103,7 +104,29 @@ func (vm *VM) RunProgramDebugMode() {
 }
 
 func (vm *VM) RunProgram() {
+	// Get original value for GOGC, or set to 100 if not present
+	key, ok := os.LookupEnv("GOGC")
+	if !ok {
+		key = "100"
+	}
+
+	gcPercent, err := strconv.ParseInt(key, 10, 32)
+	if err != nil {
+		gcPercent = 100
+	}
+
 	defer getDefaultRecoverFuncForVM(vm)()
+	defer func() {
+		// Restore GC
+		debug.SetGCPercent(int(gcPercent))
+	}()
+
+	// Disable the garbage collector while we're running (memory is allocated
+	// up front during compile/VM creation, but not during execution aside from stack)
+	//
+	// The reason is that in the tight loop of instruction execution, function calls
+	// and memory allocs are too expensive
+	debug.SetGCPercent(-1)
 
 	vm.execInstructions(false)
 	if err := vm.errcode; err != nil {
