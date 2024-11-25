@@ -492,7 +492,7 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 		code := Bytecode(instr.code & 0xff)
 		if code.IsRegisterOp() {
 			// Make sure the register read/write is within bounds
-			if instr.register > uint16(numRegisters) {
+			if instr.register >= uint16(numRegisters) {
 				return Program{}, fmt.Errorf("out of bounds register write at %d: %s", i, instr)
 			}
 		}
