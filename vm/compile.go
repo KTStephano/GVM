@@ -83,10 +83,10 @@ const (
 	xorNoArgs uint16 = uint16(Xor)
 	xorOneArg uint16 = 0x0100 | uint16(Xor)
 
-	shiftRNoArgs uint16 = uint16(Shiftr)
-	shiftROneArg uint16 = 0x0100 | uint16(Shiftr)
 	shiftLNoArgs uint16 = uint16(Shiftl)
 	shiftLOneArg uint16 = 0x0100 | uint16(Shiftl)
+	shiftRNoArgs uint16 = uint16(Shiftr)
+	shiftROneArg uint16 = 0x0100 | uint16(Shiftr)
 
 	jmpNoArgs uint16 = uint16(Jmp)
 	jmpOneArg uint16 = 0x0100 | uint16(Jmp)
@@ -131,6 +131,11 @@ const (
 	rdiviTwoArgs uint16 = 0x0200 | uint16(Rdivi)
 	rdivfOneArg  uint16 = 0x0100 | uint16(Rdivf)
 	rdivfTwoArgs uint16 = 0x0200 | uint16(Rdivf)
+
+	rshiftLOneArg  uint16 = 0x0100 | uint16(Rshiftl)
+	rshiftLTwoArgs uint16 = 0x0200 | uint16(Rshiftl)
+	rshiftROneArg  uint16 = 0x0100 | uint16(Rshiftr)
+	rshiftRTwoargs uint16 = 0x0200 | uint16(Rshiftr)
 
 	exitNoArgs uint16 = uint16(Exit)
 )
@@ -257,7 +262,6 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][3]st
 
 				// Insert escape sequence replacements for the characters in between the quotes
 				// re-add the quotes after (that's what guardC holds)
-
 				args = fmt.Sprintf("%c%s%c", guardC, insertEscapeSeqReplacements(args[1:last]), guardC)
 
 				// Recompute the last index since escape sequence replacements may have changed the string length
@@ -469,7 +473,8 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 		instructions = append(instructions, instr)
 	}
 
-	// Check for invalid register stores
+	// Check for invalid register stores (need to keep program counter and stack pointer
+	// from being written over by the input code)
 	for i, instr := range instructions {
 		code := Bytecode(instr.code & 0xff)
 		numArgs := (instr.code & 0xff00) >> 8
@@ -481,10 +486,13 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 		} else if code == Raddi || code == Raddf ||
 			code == Rsubi || code == Rsubf ||
 			code == Rmuli || code == Rmulf ||
-			code == Rdivi || code == Rdivf {
+			code == Rdivi || code == Rdivf ||
+			code == Rshiftl || code == Rshiftr {
 
 			regIdx := instr.arg
 			if numArgs > 1 {
+				// When number of arguments > 1 the register is moved into the byteArg field to
+				// free up the 32-bit entry for the inline constant
 				regIdx = uint32(instr.byteArg)
 			}
 

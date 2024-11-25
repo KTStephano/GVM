@@ -67,6 +67,8 @@ var (
 	errIO                 = errors.New("input-output error")
 )
 
+// Takes a program and returns a VM that's ready to execute the program from
+// the beginning
 func NewVirtualMachine(program Program) *VM {
 	vm := &VM{
 		program: program.instructions,
@@ -90,6 +92,9 @@ func NewVirtualMachine(program Program) *VM {
 	return vm
 }
 
+// Takes an instruction and attempts to format it in 2 ways:
+//  1. if debug symbols available, use that to print original source
+//  2. if no debug symbols, approximate the code (labels will have been replaced with numbers)
 func formatInstructionStr(vm *VM, pc register, prefix string) string {
 	if pc < register(len(vm.program)) {
 		if vm.debugSym != nil {
@@ -211,11 +216,6 @@ func getStackInputsNoArgs(vm *VM) (uint32, uint32, []byte) {
 }
 
 func getStackInputOneArg(vm *VM) (uint32, []byte) {
-	x := vm.peekStack()
-	return uint32FromBytes(x), x
-}
-
-func getRArithValsOneArg(vm *VM) (uint32, []byte) {
 	x := vm.peekStack()
 	return uint32FromBytes(x), x
 }
@@ -391,7 +391,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 		// Begin radd instructions
 		case raddiOneArg:
-			x, bytes := getRArithValsOneArg(vm)
+			x, bytes := getStackInputOneArg(vm)
 			v := vm.registers[oparg] + x
 			vm.registers[oparg] = v
 			uint32ToBytes(v, bytes)
@@ -400,7 +400,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.registers[opbyte] = v
 			vm.pushStack(v)
 		case raddfOneArg:
-			x, bytes := getRArithValsOneArg(vm)
+			x, bytes := getStackInputOneArg(vm)
 			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) + math.Float32frombits(x))
 			vm.registers[oparg] = v
 			uint32ToBytes(v, bytes)
@@ -411,7 +411,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 		// Begin rsub instructions
 		case rsubiOneArg:
-			x, bytes := getRArithValsOneArg(vm)
+			x, bytes := getStackInputOneArg(vm)
 			v := vm.registers[oparg] - x
 			vm.registers[oparg] = v
 			uint32ToBytes(v, bytes)
@@ -420,7 +420,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.registers[opbyte] = v
 			vm.pushStack(v)
 		case rsubfOneArg:
-			x, bytes := getRArithValsOneArg(vm)
+			x, bytes := getStackInputOneArg(vm)
 			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) - math.Float32frombits(x))
 			vm.registers[oparg] = v
 			uint32ToBytes(v, bytes)
@@ -431,7 +431,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 		// Begin rmul instructions
 		case rmuliOneArg:
-			x, bytes := getRArithValsOneArg(vm)
+			x, bytes := getStackInputOneArg(vm)
 			v := vm.registers[oparg] * x
 			vm.registers[oparg] = v
 			uint32ToBytes(v, bytes)
@@ -440,7 +440,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.registers[opbyte] = v
 			vm.pushStack(v)
 		case rmulfOneArg:
-			x, bytes := getRArithValsOneArg(vm)
+			x, bytes := getStackInputOneArg(vm)
 			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) * math.Float32frombits(x))
 			vm.registers[oparg] = v
 			uint32ToBytes(v, bytes)
@@ -451,7 +451,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 		// Begin rdiv instructions
 		case rdiviOneArg:
-			x, bytes := getRArithValsOneArg(vm)
+			x, bytes := getStackInputOneArg(vm)
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
 			// and its discussion
@@ -476,12 +476,34 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.registers[opbyte] = v
 			vm.pushStack(v)
 		case rdivfOneArg:
-			x, bytes := getRArithValsOneArg(vm)
+			x, bytes := getStackInputOneArg(vm)
 			v := math.Float32bits(math.Float32frombits(vm.registers[oparg]) / math.Float32frombits(x))
 			vm.registers[oparg] = v
 			uint32ToBytes(v, bytes)
 		case rdivfTwoArgs:
 			v := math.Float32bits(math.Float32frombits(vm.registers[opbyte]) / math.Float32frombits(oparg))
+			vm.registers[opbyte] = v
+			vm.pushStack(v)
+
+		// Begin register shift instructions
+		case rshiftLOneArg:
+			x, bytes := getStackInputOneArg(vm)
+			v := vm.registers[oparg] << x
+			vm.registers[oparg] = v
+			uint32ToBytes(v, bytes)
+		case rshiftLTwoArgs:
+			v := vm.registers[opbyte] << oparg
+			vm.registers[opbyte] = v
+			vm.pushStack(v)
+
+		case rshiftROneArg:
+			x, bytes := getStackInputOneArg(vm)
+			v := vm.registers[oparg] >> x
+			vm.registers[oparg] = v
+			uint32ToBytes(v, bytes)
+
+		case rshiftRTwoargs:
+			v := vm.registers[opbyte] >> oparg
 			vm.registers[opbyte] = v
 			vm.pushStack(v)
 

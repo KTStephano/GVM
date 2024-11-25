@@ -34,11 +34,13 @@ package gvm
 
 	Current bytecodes (<> means required, [] means optional)
 			nop    (no operation)
-			byte   <arg> (pushes byte value onto the stack)
-			const  <arg> (pushes const value onto stack (can be a label))
-			load   <arg> (loads value of register)
-			store  <arg> (stores value of stack[0] to register)
-			kstore <arg> (stores value of stack[0] to register and keeps value on the stack)
+			byte   <constant> (pushes byte value onto the stack)
+			const  <constant> (pushes const value onto stack (can be a label))
+
+			load   <register> (loads value of register)
+			store  <register> (stores value of stack[0] to register)
+			kstore <register> (stores value of stack[0] to register and keeps value on the stack)
+
 			loadp8, loadp16, loadp32 (loads 8, 16 or 32 bit value from address at stack[0], widens to 32 bits)
 				loadpX are essentially stack[0] = *stack[0]
 			storep8, storep16, storep32 (narrows stack[1] to 8, 16 or 32 bits and writes it to address at stack[0])
@@ -47,30 +49,33 @@ package gvm
 		The push/pop instructions accept an optional argument. This argument is the number of bytes to push to or pop from the stack.
 		If no argument is specified, stack[0] should hold the bytes argument.
 
-			push [arg] (reserve bytes on the stack, advances stack pointer)
-			pop  [arg] (free bytes back to the stack, retracts stack pointer)
+			push [constant] (reserve bytes on the stack, advances stack pointer)
+			pop  [constant] (free bytes back to the stack, retracts stack pointer)
 
 		All arithmetic instructions accept an optional argument. This is a fast path that will perform stack[0] <op> arg and overwrite
 		the current stack value with the result.
 
-			addi, addf [arg] (int and float add)
-			subi, subf [arg] (int and float sub)
-			muli, mulf [arg] (int and float mul)
-			divi, divf [arg] (int and float div)
+			addi, addf [constant] (int and float add)
+			subi, subf [constant] (int and float sub)
+			muli, mulf [constant] (int and float mul)
+			divi, divf [constant] (int and float div)
 
 		The remainder functions work the same as % in languages such as C. It returns the remainder after dividing stack[0] and stack[1].
 		There is a fast path for these as well that performs remainder stack[0] arg.
 
-			remu, rems [arg] (unsigned and signed remainder after integer division)
-			remf	   [arg] (remainder after floating point division)
+			remu, rems [constant] (unsigned and signed remainder after integer division)
+			remf	   [constant] (remainder after floating point division)
 
 		and, or, xor instructions all take an optional argument. This is a fast path that will perform stack[0] <op> arg and then overwrite
 		the current stack value with the result.
 
-			not (inverts all bits of stack[0])
-			and (logical AND between stack[0] and stack[1])
-			or  (logical OR between stack[0] and stack[1])
-			xor (logical XOR between stack[0] and stack[1])
+			not 		   (inverts all bits of stack[0])
+			and [constant] (logical AND between stack[0] and stack[1])
+			or  [constant] (logical OR between stack[0] and stack[1])
+			xor [constant] (logical XOR between stack[0] and stack[1])
+
+			shiftl (shift stack[0] left by stack[1])
+			shiftr (shift stack[0] right by stack[1])
 
 		Each of the jump instructions accept an optional argument. If no argument is specified, stack[0] is where
 		they check for their jump address. Otherwise the argument is treated as the jump address.
@@ -95,6 +100,9 @@ package gvm
 			rsubi, rsubf <register> [constant]
 			rmuli, rmulf <register> [constant]
 			rdivi, rdivf <register> [constant]
+
+			rshiftl <register> [constant] (shift register left)
+			rshiftr <register> [constant] (shift register right)
 
 		The following all do: (compare stack[0] to stack[1]: negative if stack[0] < stack[1], 0 if stack[0] == stack[1], positive if stack[0] > stack[1])
 		However, the naming scheme is as follows:
@@ -166,8 +174,8 @@ const (
 	And    Bytecode = 0x31
 	Or     Bytecode = 0x32
 	Xor    Bytecode = 0x33
-	Shiftr Bytecode = 0x34
 	Shiftl Bytecode = 0x35
+	Shiftr Bytecode = 0x34
 
 	Jmp  Bytecode = 0x40
 	Jz   Bytecode = 0x41
@@ -185,14 +193,16 @@ const (
 	Flush  Bytecode = 0x52
 	Readc  Bytecode = 0x53
 
-	Raddi Bytecode = 0x60
-	Raddf Bytecode = 0x61
-	Rsubi Bytecode = 0x62
-	Rsubf Bytecode = 0x63
-	Rmuli Bytecode = 0x64
-	Rmulf Bytecode = 0x65
-	Rdivi Bytecode = 0x66
-	Rdivf Bytecode = 0x67
+	Raddi   Bytecode = 0x60
+	Raddf   Bytecode = 0x61
+	Rsubi   Bytecode = 0x62
+	Rsubf   Bytecode = 0x63
+	Rmuli   Bytecode = 0x64
+	Rmulf   Bytecode = 0x65
+	Rdivi   Bytecode = 0x66
+	Rdivf   Bytecode = 0x67
+	Rshiftr Bytecode = 0x68
+	Rshiftl Bytecode = 0x69
 
 	Exit Bytecode = 0xFF
 )
@@ -229,6 +239,8 @@ var (
 		"and":      And,
 		"or":       Or,
 		"Xor":      Xor,
+		"shiftl":   Shiftl,
+		"shiftr":   Shiftr,
 		"jmp":      Jmp,
 		"jz":       Jz,
 		"jnz":      Jnz,
@@ -244,6 +256,15 @@ var (
 		"flush":    Flush,
 		"readc":    Readc,
 		"raddi":    Raddi,
+		"raddf":    Raddf,
+		"rsubi":    Rsubi,
+		"rsubf":    Rsubf,
+		"rmuli":    Rmuli,
+		"rmulf":    Rmulf,
+		"rdivi":    Rdivi,
+		"rdivf":    Rdivf,
+		"rshiftl":  Rshiftl,
+		"rshiftr":  Rshiftr,
 		"exit":     Exit,
 	}
 
@@ -260,27 +281,27 @@ func (b Bytecode) String() string {
 	return str
 }
 
-// True if the bytecode requires an argument to be paired
-// with it, such as const X
+// True if the bytecode requires an argument to be paired with it, such as const X
 func (b Bytecode) NumRequiredOpArgs() int {
 	if b == Const || b == Byte || b == Load || b == Store || b == Kstore ||
-		b == Raddi || b == Raddf || b == Rsubi || b == Rsubf || b == Rmuli || b == Rmulf || b == Rdivi || b == Rdivf {
+		b == Raddi || b == Raddf || b == Rsubi || b == Rsubf || b == Rmuli || b == Rmulf || b == Rdivi || b == Rdivf ||
+		b == Rshiftl || b == Rshiftr {
 		return 1
 	} else {
 		return 0
 	}
 }
 
-// True if the bytecode can optionally accept an argument instead of
-// always inspecting the stack
+// True if the bytecode can optionally accept an argument instead of always inspecting the stack
 func (b Bytecode) NumOptionalOpArgs() int {
 	if b == Addi || b == Addf || b == Subi || b == Subf || b == Muli || b == Mulf || b == Divi || b == Divf ||
 		b == Remu || b == Rems || b == Remf ||
 		b == And || b == Or || b == Xor ||
+		b == Shiftl || b == Shiftr ||
 		b == Push || b == Pop ||
 		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg ||
 		b == Raddi || b == Raddf || b == Rsubi || b == Rsubf || b == Rmuli || b == Rmulf || b == Rdivi || b == Rdivf ||
-		b == Shiftl || b == Shiftr {
+		b == Rshiftl || b == Rshiftr {
 		return 1
 	} else {
 		return 0
