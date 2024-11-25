@@ -1,4 +1,4 @@
-    const 150000000
+    const 50000000
     store 2             // loads count into register[2]
 
 loop:
