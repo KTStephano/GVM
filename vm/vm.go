@@ -109,11 +109,19 @@ func NewVirtualMachine(program Program) *VM {
 	return vm
 }
 
+// Returns a tuple of (code, register, oparg) without packaging it into an Instruction type
+func decodeInstruction(bytes []byte) (uint16, uint16, uint32) {
+	codeRegister := uint32FromBytes(bytes)
+	return uint16(codeRegister & 0x0000ffff), uint16((codeRegister & 0xffff0000) >> 16), uint32FromBytes(bytes[4:])
+}
+
 // Takes a series of bytes encoded as little endian and converts them to an instruction
-func decodeInstructionBytes(bytes []byte) Instruction {
+// Returns an Instruction type
+func decodeInstructionTyped(bytes []byte) Instruction {
+	codeRegister := uint32FromBytes(bytes)
 	return Instruction{
-		code:     uint16FromBytes(bytes),
-		register: uint16FromBytes(bytes[2:]),
+		code:     uint16(codeRegister & 0x0000ffff),
+		register: uint16((codeRegister & 0xffff0000) >> 16),
 		arg:      uint32FromBytes(bytes[4:]),
 	}
 }
@@ -128,7 +136,7 @@ func formatInstructionStr(vm *VM, pc register, prefix string) string {
 			return fmt.Sprintf(prefix+" %d: %s", pc, vm.debugSym.source[int(pc)])
 		} else {
 			// Use instruction -> string conversion since we don't have debug symbols
-			return fmt.Sprintf(prefix+" %d: %s", pc, decodeInstructionBytes(vm.memory[pc:]))
+			return fmt.Sprintf(prefix+" %d: %s", pc, decodeInstructionTyped(vm.memory[pc:]))
 		}
 	}
 
@@ -289,10 +297,11 @@ func (vm *VM) execInstructions(singleStep bool) {
 			return
 		}
 
-		instr := decodeInstructionBytes(vm.memory[*pc:])
-		code := instr.code
-		opreg := instr.register
-		oparg := instr.arg
+		// instr := decodeInstruction(vm.memory[*pc:])
+		// code := instr.code
+		// opreg := instr.register
+		// oparg := instr.arg
+		code, opreg, oparg := decodeInstruction(vm.memory[*pc:])
 
 		*pc += instructionBytes
 
