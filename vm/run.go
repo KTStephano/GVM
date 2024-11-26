@@ -18,7 +18,7 @@ func getDefaultRecoverFuncForVM(vm *VM) func() {
 
 			// Back up to instruction that failed
 			if pc > 0 {
-				pc--
+				pc -= instructionBytes
 			}
 
 			if vm.errcode != nil {
@@ -74,8 +74,8 @@ func (vm *VM) RunProgramDebugMode() {
 			if vm.errcode != nil {
 				vm.printDebugOutput()
 				if vm.errcode != errProgramFinished {
-					// pc-1 should be the instruction that failed
-					fmt.Println(formatInstructionStr(vm, *vm.pc-1, vm.errcode.Error()))
+					// pc-instructionBytes should be the instruction that failed
+					fmt.Println(formatInstructionStr(vm, *vm.pc-instructionBytes, vm.errcode.Error()))
 				}
 
 				return

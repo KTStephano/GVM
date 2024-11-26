@@ -272,7 +272,7 @@ var (
 	instrToStrMap map[Bytecode]string
 )
 
-// Convert bytecode to string
+// Convert bytecode to string for use with Print/Sprint
 func (b Bytecode) String() string {
 	str, ok := instrToStrMap[b]
 	if !ok {

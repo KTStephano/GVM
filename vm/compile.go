@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unsafe"
 )
 
 // Laid out so that sizeof(Instruction) == 8 is possible
@@ -21,6 +22,10 @@ type Instruction struct {
 	// Normal 32-bit argument for inlining constants
 	arg uint32
 }
+
+const (
+	instructionBytes uint32 = uint32(unsafe.Sizeof(Instruction{}))
+)
 
 type Program struct {
 	instructions []Instruction
@@ -173,6 +178,7 @@ func NewInstruction(numArgs byte, code Bytecode, register uint16, arg uint32) In
 	}
 }
 
+// Allows an instruction to be used with Print/Sprint
 func (instr Instruction) String() string {
 	// Lower 8 bits are the bytecode, upper 8 bits are the number of op args
 	code := Bytecode(instr.code & 0xff)
@@ -251,9 +257,9 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][3]st
 			return nil, fmt.Errorf("invalid label: %s", line)
 		}
 
-		labels[r] = fmt.Sprintf("%d", len(lines))
+		labels[r] = fmt.Sprintf("%d", len(lines)*int(instructionBytes))
 		if debugSym != nil {
-			debugSym[len(lines)] = label
+			debugSym[len(lines)*int(instructionBytes)] = label
 			// For debug symbols we add a nop so that we can preserve this line in the code
 			return append(lines, [3]string{"nop", "", ""}), nil
 		} else {
@@ -315,14 +321,14 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][3]st
 			for i := len(bytes) - 1; i >= 0; i-- {
 				if debugSym != nil {
 					// Since it's a debug symbol, add back the escaped characters
-					debugSym[len(lines)] = revertEscapeSeqReplacements(fmt.Sprintf("%s '%c'", Byte.String(), bytes[i]))
+					debugSym[len(lines)*int(instructionBytes)] = revertEscapeSeqReplacements(fmt.Sprintf("%s '%c'", Byte.String(), bytes[i]))
 				}
 
 				lines = append(lines, [3]string{Byte.String(), fmt.Sprintf("%d", bytes[i]), resultArgs[1]})
 			}
 		} else {
 			if debugSym != nil {
-				debugSym[len(lines)] = line
+				debugSym[len(lines)*int(instructionBytes)] = line
 			}
 
 			// Forward result args unchanged
@@ -505,4 +511,11 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 	}
 
 	return Program{instructions: instructions, debugSymMap: debugSymMap}, nil
+}
+
+// This is called when package is first loaded (before main)
+func init() {
+	if instructionBytes != 8 {
+		panic("Instruction size bytes not equal to 8")
+	}
 }

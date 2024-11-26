@@ -25,10 +25,13 @@ type debugSymbols struct {
 type VM struct {
 	registers [numRegisters]register
 	pc        *register // program counter
-	sp        *register // stack pointer
+	sp        *register // stack pointer (grows down (largest address towards smallest address))
 
-	stack   [stackSize]byte // grows down (largest address towards smallest address)
-	program []Instruction
+	memory [heapSize]byte
+
+	// Process is the initial code supplied to the VM
+	processSize      uint32
+	processSizeBytes uint32
 
 	// Allows vm to read/write to some type of output
 	stdout *bufio.Writer
@@ -53,7 +56,7 @@ type numeric32 interface {
 
 const (
 	numRegisters uint32 = 32
-	stackSize    uint32 = 65536
+	heapSize     uint32 = 65536
 	// 4 bytes since our virtual architecture is 32-bit
 	varchBytes   register = 4
 	varchBytesx2 register = 2 * varchBytes
@@ -71,15 +74,14 @@ var (
 // the beginning
 func NewVirtualMachine(program Program) *VM {
 	vm := &VM{
-		program: program.instructions,
-		stdin:   bufio.NewReader(os.Stdin),
+		stdin: bufio.NewReader(os.Stdin),
 	}
 
 	vm.pc = &vm.registers[0]
 	vm.sp = &vm.registers[1]
 	// Set stack pointer to be 1 after the last valid stack address
 	// (indexing this will trigger a seg fault)
-	*vm.sp = stackSize
+	*vm.sp = heapSize
 
 	if program.debugSymMap != nil {
 		vm.debugOut = &strings.Builder{}
@@ -89,20 +91,44 @@ func NewVirtualMachine(program Program) *VM {
 		vm.stdout = bufio.NewWriter(os.Stdout)
 	}
 
+	for i, instr := range program.instructions {
+		// Address in VM memory we will place this instruction
+		baseAddr := instructionBytes * uint32(i)
+		bytes := vm.memory[baseAddr:]
+
+		// Convert instruction to a series of bytes in memory
+		uint16ToBytes(instr.code, bytes)
+		uint16ToBytes(instr.register, bytes[2:])
+		uint32ToBytes(instr.arg, bytes[4:])
+	}
+
+	// Set base process size
+	vm.processSize = uint32(len(program.instructions))
+	vm.processSizeBytes = vm.processSize * instructionBytes
+
 	return vm
+}
+
+// Takes a series of bytes encoded as little endian and converts them to an instruction
+func decodeInstructionBytes(bytes []byte) Instruction {
+	return Instruction{
+		code:     uint16FromBytes(bytes),
+		register: uint16FromBytes(bytes[2:]),
+		arg:      uint32FromBytes(bytes[4:]),
+	}
 }
 
 // Takes an instruction and attempts to format it in 2 ways:
 //  1. if debug symbols available, use that to print original source
 //  2. if no debug symbols, approximate the code (labels will have been replaced with numbers)
 func formatInstructionStr(vm *VM, pc register, prefix string) string {
-	if pc < register(len(vm.program)) {
+	if pc < vm.processSizeBytes {
 		if vm.debugSym != nil {
 			// Use debug symbols to print source as it was when first read in
 			return fmt.Sprintf(prefix+" %d: %s", pc, vm.debugSym.source[int(pc)])
 		} else {
 			// Use instruction -> string conversion since we don't have debug symbols
-			return fmt.Sprintf(prefix+" %d: %s", pc, vm.program[pc])
+			return fmt.Sprintf(prefix+" %d: %s", pc, decodeInstructionBytes(vm.memory[pc:]))
 		}
 	}
 
@@ -116,7 +142,7 @@ func (vm *VM) printCurrentState() {
 	}
 
 	fmt.Println("  registers>", vm.registers)
-	fmt.Println("  stack>", vm.stack[*vm.sp:])
+	fmt.Println("  stack>", vm.memory[*vm.sp:])
 
 	vm.printDebugOutput()
 }
@@ -128,9 +154,19 @@ func (vm *VM) printDebugOutput() {
 }
 
 func (vm *VM) printProgram() {
-	for i := range vm.program {
-		fmt.Println(formatInstructionStr(vm, register(i), " "))
+	for i := range vm.processSize {
+		fmt.Println(formatInstructionStr(vm, register(i)*instructionBytes, " "))
 	}
+}
+
+// Converts bytes -> uint16
+func uint16FromBytes(bytes []byte) uint16 {
+	return binary.LittleEndian.Uint16(bytes)
+}
+
+// Converts uint16 to a sequence of 2 bytes encoded as little endian
+func uint16ToBytes(u uint16, bytes []byte) {
+	binary.LittleEndian.PutUint16(bytes, u)
 }
 
 // Converts bytes -> uint32, assuming the given bytes are at least
@@ -150,40 +186,40 @@ func float32ToBytes(f float32, bytes []byte) {
 
 // Returns current top of stack without moving stack pointer
 func (vm *VM) peekStack() []byte {
-	return vm.stack[*vm.sp:]
+	return vm.memory[*vm.sp:]
 }
 
 // Returns top of stack before moving stack pointer forward
 func (vm *VM) popStack() []byte {
-	bytes := vm.stack[*vm.sp:]
+	bytes := vm.memory[*vm.sp:]
 	*vm.sp += varchBytes
 	return bytes
 }
 
 // Returns top of stack (as uint32) before moving stack pointer forward
 func (vm *VM) popStackUint32() uint32 {
-	val := uint32FromBytes(vm.stack[*vm.sp:])
+	val := uint32FromBytes(vm.memory[*vm.sp:])
 	*vm.sp += varchBytes
 	return val
 }
 
 // Returns 1st and 2nd top stack values before moving stack pointer forward
 func (vm *VM) popStackx2() ([]byte, []byte) {
-	bytes := vm.stack[*vm.sp:]
+	bytes := vm.memory[*vm.sp:]
 	*vm.sp += varchBytesx2
 	return bytes, bytes[varchBytes:]
 }
 
 // Returns 1st and 2nd top stack values (as uint32) before moving stack pointer forward
 func (vm *VM) popStackx2Uint32() (uint32, uint32) {
-	bytes := vm.stack[*vm.sp:]
+	bytes := vm.memory[*vm.sp:]
 	*vm.sp += varchBytesx2
 	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:])
 }
 
 // Pops the first argument, peeks the second
 func (vm *VM) popPeekStack() ([]byte, []byte) {
-	bytes := vm.stack[*vm.sp:]
+	bytes := vm.memory[*vm.sp:]
 	*vm.sp += varchBytes
 	return bytes, bytes[varchBytes:]
 }
@@ -191,13 +227,13 @@ func (vm *VM) popPeekStack() ([]byte, []byte) {
 // Narrows value to 1 byte and pushes it to the stack
 func (vm *VM) pushStackByte(value register) {
 	*vm.sp--
-	vm.stack[*vm.sp] = byte(value)
+	vm.memory[*vm.sp] = byte(value)
 }
 
 // Pushes value to stack unmodified
 func (vm *VM) pushStack(value register) {
 	*vm.sp -= varchBytes
-	uint32ToBytes(value, vm.stack[*vm.sp:])
+	uint32ToBytes(value, vm.memory[*vm.sp:])
 }
 
 // Peeks the first item off the stack, converts it to uint32 and returns the stack
@@ -248,17 +284,17 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 func (vm *VM) execInstructions(singleStep bool) {
 	for {
 		pc := vm.pc
-		if *pc >= register(len(vm.program)) {
+		if *pc >= vm.processSizeBytes {
 			vm.errcode = errProgramFinished
 			return
 		}
 
-		instr := vm.program[*vm.pc]
+		instr := decodeInstructionBytes(vm.memory[*pc:])
 		code := instr.code
 		opreg := instr.register
 		oparg := instr.arg
 
-		*pc++
+		*pc += instructionBytes
 
 		switch code {
 		case nopNoArgs:
@@ -277,55 +313,55 @@ func (vm *VM) execInstructions(singleStep bool) {
 		case loadp8NoArgs:
 			bytes := vm.peekStack()
 			addr := uint32FromBytes(bytes)
-			uint32ToBytes(uint32(vm.stack[addr]), bytes)
+			uint32ToBytes(uint32(vm.memory[addr]), bytes)
 		case loadp16NoArgs:
 			bytes := vm.peekStack()
 			addr := uint32FromBytes(bytes)
-			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.stack[addr:])), bytes)
+			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.memory[addr:])), bytes)
 		case loadp32NoArgs:
 			bytes := vm.peekStack()
 			addr := uint32FromBytes(bytes)
-			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.stack[addr:])), bytes)
+			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.memory[addr:])), bytes)
 		case storep8NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
 			addr := uint32FromBytes(addrBytes)
-			vm.stack[addr] = valueBytes[0]
+			vm.memory[addr] = valueBytes[0]
 		case storep16NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
 			addr := uint32FromBytes(addrBytes)
 
 			// unrolled loop
-			vm.stack[addr] = valueBytes[0]
-			vm.stack[addr+1] = valueBytes[1]
+			vm.memory[addr] = valueBytes[0]
+			vm.memory[addr+1] = valueBytes[1]
 		case storep32NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
 			addr := uint32FromBytes(addrBytes)
 
 			// unrolled loop
-			vm.stack[addr] = valueBytes[0]
-			vm.stack[addr+1] = valueBytes[1]
-			vm.stack[addr+2] = valueBytes[2]
-			vm.stack[addr+3] = valueBytes[3]
+			vm.memory[addr] = valueBytes[0]
+			vm.memory[addr+1] = valueBytes[1]
+			vm.memory[addr+2] = valueBytes[2]
+			vm.memory[addr+3] = valueBytes[3]
 		case pushNoArgs:
 			// push with no args, meaning we pull # bytes from the stack
 			bytes := vm.popStackUint32()
 			*vm.sp -= register(bytes)
 			// This will ensure we catch invalid stack addresses
-			var _ = vm.stack[*vm.sp]
+			var _ = vm.memory[*vm.sp]
 		case pushOneArg:
 			// push <constant> meaning the byte value is inlined
 			*vm.sp -= register(oparg)
 			// This will ensure we catch invalid stack addresses
-			var _ = vm.stack[*vm.sp]
+			var _ = vm.memory[*vm.sp]
 		case popNoArgs:
 			bytes := vm.popStackUint32()
 			*vm.sp = *vm.sp + register(bytes)
 			// This will ensure we catch invalid stack addresses
-			var _ = vm.stack[*vm.sp]
+			var _ = vm.memory[*vm.sp]
 		case popOneArg:
 			*vm.sp -= register(oparg)
 			// This will ensure we catch invalid stack addresses
-			var _ = vm.stack[*vm.sp]
+			var _ = vm.memory[*vm.sp]
 
 		// Begin add instructions
 		case addiNoArgs:
@@ -659,7 +695,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 		// Begin console IO instructions
 		case writebNoArgs:
 			addr := vm.popStackUint32()
-			vm.stdout.WriteByte(vm.stack[addr])
+			vm.stdout.WriteByte(vm.memory[addr])
 		case writecNoArgs:
 			character := rune(vm.popStackUint32())
 			vm.stdout.WriteRune(character)
@@ -675,7 +711,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 		case exitNoArgs:
 			// Sets the pc to be one after the last instruction
-			*pc = register(len(vm.program))
+			*pc = vm.processSizeBytes
 
 		default:
 			// Shouldn't get here since we preprocess+parse all source into
