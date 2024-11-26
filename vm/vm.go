@@ -27,11 +27,18 @@ type VM struct {
 	pc        *register // program counter
 	sp        *register // stack pointer (grows down (largest address towards smallest address))
 
-	memory [heapSize]byte
+	// activeSegment is a byte slice into the VM's memory
+	// At the beginning it points to the entire available memory range, but can be restricted at
+	// runtime
+	activeSegment []byte
+	memory        [heapSize]byte
 
 	// Process is the initial code supplied to the VM
 	processSize      uint32
 	processSizeBytes uint32
+
+	// For when the stack size has been restricted to a certain region of memory
+	stackOffsetBytes uint32
 
 	// Allows vm to read/write to some type of output
 	stdout *bufio.Writer
@@ -45,11 +52,12 @@ type VM struct {
 	debugSym *debugSymbols
 }
 
+// Constrains to integer 32-bit types
 type integer32 interface {
 	int32 | uint32
 }
 
-// Constrains to types we can freely interpret their 32 bit pattern
+// Constrains to integer and floating point 32-bit types
 type numeric32 interface {
 	integer32 | float32
 }
@@ -83,6 +91,9 @@ func NewVirtualMachine(program Program) *VM {
 	// (indexing this will trigger a seg fault)
 	*vm.sp = heapSize
 
+	// Set available segment to initially point to entire memory region
+	vm.activeSegment = vm.memory[:]
+
 	if program.debugSymMap != nil {
 		vm.debugOut = &strings.Builder{}
 		vm.debugSym = &debugSymbols{source: program.debugSymMap}
@@ -105,6 +116,9 @@ func NewVirtualMachine(program Program) *VM {
 	// Set base process size
 	vm.processSize = uint32(len(program.instructions))
 	vm.processSizeBytes = vm.processSize * instructionBytes
+
+	// Push size of program segment in bytes onto stack as first argument
+	vm.pushStack(vm.processSizeBytes)
 
 	return vm
 }
@@ -143,6 +157,12 @@ func formatInstructionStr(vm *VM, pc register, prefix string) string {
 	return ""
 }
 
+// Takes an absolute stack pointer (pointing to address in global memory segment) and
+// converts it to a stack pointer relative to the current stack slice
+func (vm *VM) computeRelativeStackPointer(sp uint32) uint32 {
+	return sp - vm.stackOffsetBytes
+}
+
 func (vm *VM) printCurrentState() {
 	instr := formatInstructionStr(vm, *vm.pc, "  next instruction>")
 	if instr != "" {
@@ -150,7 +170,7 @@ func (vm *VM) printCurrentState() {
 	}
 
 	fmt.Println("  registers>", vm.registers)
-	fmt.Println("  stack>", vm.memory[*vm.sp:])
+	fmt.Println("  stack>", vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):])
 
 	vm.printDebugOutput()
 }
@@ -165,11 +185,6 @@ func (vm *VM) printProgram() {
 	for i := range vm.processSize {
 		fmt.Println(formatInstructionStr(vm, register(i)*instructionBytes, " "))
 	}
-}
-
-// Converts bytes -> uint16
-func uint16FromBytes(bytes []byte) uint16 {
-	return binary.LittleEndian.Uint16(bytes)
 }
 
 // Converts uint16 to a sequence of 2 bytes encoded as little endian
@@ -194,40 +209,40 @@ func float32ToBytes(f float32, bytes []byte) {
 
 // Returns current top of stack without moving stack pointer
 func (vm *VM) peekStack() []byte {
-	return vm.memory[*vm.sp:]
+	return vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
 }
 
 // Returns top of stack before moving stack pointer forward
 func (vm *VM) popStack() []byte {
-	bytes := vm.memory[*vm.sp:]
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
 	*vm.sp += varchBytes
 	return bytes
 }
 
 // Returns top of stack (as uint32) before moving stack pointer forward
 func (vm *VM) popStackUint32() uint32 {
-	val := uint32FromBytes(vm.memory[*vm.sp:])
+	val := uint32FromBytes(vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):])
 	*vm.sp += varchBytes
 	return val
 }
 
 // Returns 1st and 2nd top stack values before moving stack pointer forward
 func (vm *VM) popStackx2() ([]byte, []byte) {
-	bytes := vm.memory[*vm.sp:]
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
 	*vm.sp += varchBytesx2
 	return bytes, bytes[varchBytes:]
 }
 
 // Returns 1st and 2nd top stack values (as uint32) before moving stack pointer forward
 func (vm *VM) popStackx2Uint32() (uint32, uint32) {
-	bytes := vm.memory[*vm.sp:]
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
 	*vm.sp += varchBytesx2
 	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:])
 }
 
 // Pops the first argument, peeks the second
 func (vm *VM) popPeekStack() ([]byte, []byte) {
-	bytes := vm.memory[*vm.sp:]
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
 	*vm.sp += varchBytes
 	return bytes, bytes[varchBytes:]
 }
@@ -235,13 +250,13 @@ func (vm *VM) popPeekStack() ([]byte, []byte) {
 // Narrows value to 1 byte and pushes it to the stack
 func (vm *VM) pushStackByte(value register) {
 	*vm.sp--
-	vm.memory[*vm.sp] = byte(value)
+	vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)] = byte(value)
 }
 
 // Pushes value to stack unmodified
 func (vm *VM) pushStack(value register) {
 	*vm.sp -= varchBytes
-	uint32ToBytes(value, vm.memory[*vm.sp:])
+	uint32ToBytes(value, vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):])
 }
 
 // Peeks the first item off the stack, converts it to uint32 and returns the stack
@@ -321,56 +336,56 @@ func (vm *VM) execInstructions(singleStep bool) {
 			vm.registers[opreg] = register(regVal)
 		case loadp8NoArgs:
 			bytes := vm.peekStack()
-			addr := uint32FromBytes(bytes)
-			uint32ToBytes(uint32(vm.memory[addr]), bytes)
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(bytes))
+			uint32ToBytes(uint32(vm.activeSegment[addr]), bytes)
 		case loadp16NoArgs:
 			bytes := vm.peekStack()
-			addr := uint32FromBytes(bytes)
-			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.memory[addr:])), bytes)
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(bytes))
+			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.activeSegment[addr:])), bytes)
 		case loadp32NoArgs:
 			bytes := vm.peekStack()
-			addr := uint32FromBytes(bytes)
-			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.memory[addr:])), bytes)
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(bytes))
+			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.activeSegment[addr:])), bytes)
 		case storep8NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
-			addr := uint32FromBytes(addrBytes)
-			vm.memory[addr] = valueBytes[0]
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(addrBytes))
+			vm.activeSegment[addr] = valueBytes[0]
 		case storep16NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
-			addr := uint32FromBytes(addrBytes)
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(addrBytes))
 
 			// unrolled loop
-			vm.memory[addr] = valueBytes[0]
-			vm.memory[addr+1] = valueBytes[1]
+			vm.activeSegment[addr] = valueBytes[0]
+			vm.activeSegment[addr+1] = valueBytes[1]
 		case storep32NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
-			addr := uint32FromBytes(addrBytes)
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(addrBytes))
 
 			// unrolled loop
-			vm.memory[addr] = valueBytes[0]
-			vm.memory[addr+1] = valueBytes[1]
-			vm.memory[addr+2] = valueBytes[2]
-			vm.memory[addr+3] = valueBytes[3]
+			vm.activeSegment[addr] = valueBytes[0]
+			vm.activeSegment[addr+1] = valueBytes[1]
+			vm.activeSegment[addr+2] = valueBytes[2]
+			vm.activeSegment[addr+3] = valueBytes[3]
 		case pushNoArgs:
 			// push with no args, meaning we pull # bytes from the stack
 			bytes := vm.popStackUint32()
 			*vm.sp -= register(bytes)
 			// This will ensure we catch invalid stack addresses
-			var _ = vm.memory[*vm.sp]
+			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
 		case pushOneArg:
 			// push <constant> meaning the byte value is inlined
 			*vm.sp -= register(oparg)
 			// This will ensure we catch invalid stack addresses
-			var _ = vm.memory[*vm.sp]
+			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
 		case popNoArgs:
 			bytes := vm.popStackUint32()
 			*vm.sp = *vm.sp + register(bytes)
 			// This will ensure we catch invalid stack addresses
-			var _ = vm.memory[*vm.sp]
+			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
 		case popOneArg:
 			*vm.sp -= register(oparg)
 			// This will ensure we catch invalid stack addresses
-			var _ = vm.memory[*vm.sp]
+			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
 
 		// Begin add instructions
 		case addiNoArgs:
@@ -703,8 +718,8 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 		// Begin console IO instructions
 		case writebNoArgs:
-			addr := vm.popStackUint32()
-			vm.stdout.WriteByte(vm.memory[addr])
+			addr := vm.computeRelativeStackPointer(vm.popStackUint32())
+			vm.stdout.WriteByte(vm.activeSegment[addr])
 		case writecNoArgs:
 			character := rune(vm.popStackUint32())
 			vm.stdout.WriteRune(character)
