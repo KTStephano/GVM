@@ -31,14 +31,13 @@ type VM struct {
 	// At the beginning it points to the entire available memory range, but can be restricted at
 	// runtime
 	activeSegment []byte
-	memory        [heapSize]byte
-
-	// Process is the initial code supplied to the VM
-	processSize      uint32
-	processSizeBytes uint32
+	memory        [heapSizeBytes]byte
 
 	// For when the stack size has been restricted to a certain region of memory
 	stackOffsetBytes uint32
+
+	// Tells us how many bytes the initial loaded program was
+	processInstructionBytes uint32
 
 	// Allows vm to read/write to some type of output
 	stdout *bufio.Writer
@@ -63,15 +62,18 @@ type numeric32 interface {
 }
 
 const (
-	numRegisters uint32 = 32
-	heapSize     uint32 = 65536
 	// 4 bytes since our virtual architecture is 32-bit
 	varchBytes   register = 4
 	varchBytesx2 register = 2 * varchBytes
+
+	// Reserved bytes are where we store the interrupt vector table
+	reservedBytes uint32 = 32 * varchBytes
+	numRegisters  uint32 = 32
+	heapSizeBytes uint32 = 65536
 )
 
 var (
-	errProgramFinished    = errors.New("ran out of instructions")
+	errProcessFinished    = errors.New("ran out of instructions")
 	errSegmentationFault  = errors.New("segmentation fault")
 	errDivisionByZero     = errors.New("division by zero")
 	errUnknownInstruction = errors.New("instruction not recognized")
@@ -89,7 +91,10 @@ func NewVirtualMachine(program Program) *VM {
 	vm.sp = &vm.registers[1]
 	// Set stack pointer to be 1 after the last valid stack address
 	// (indexing this will trigger a seg fault)
-	*vm.sp = heapSize
+	*vm.sp = heapSizeBytes
+
+	// Set process start address
+	*vm.pc = reservedBytes
 
 	// Set available segment to initially point to entire memory region
 	vm.activeSegment = vm.memory[:]
@@ -104,7 +109,7 @@ func NewVirtualMachine(program Program) *VM {
 
 	for i, instr := range program.instructions {
 		// Address in VM memory we will place this instruction
-		baseAddr := instructionBytes * uint32(i)
+		baseAddr := instructionBytes*uint32(i) + reservedBytes
 		bytes := vm.memory[baseAddr:]
 
 		// Convert instruction to a series of bytes in memory
@@ -113,12 +118,12 @@ func NewVirtualMachine(program Program) *VM {
 		uint32ToBytes(instr.arg, bytes[4:])
 	}
 
-	// Set base process size
-	vm.processSize = uint32(len(program.instructions))
-	vm.processSizeBytes = vm.processSize * instructionBytes
+	vm.processInstructionBytes = uint32(len(program.instructions)) * instructionBytes
 
-	// Push size of program segment in bytes onto stack as first argument
-	vm.pushStack(vm.processSizeBytes)
+	// Push the number of reserved bytes and the length of the process instruction bytes
+	// as the initial arguments
+	vm.pushStack(reservedBytes)
+	vm.pushStack(vm.processInstructionBytes)
 
 	return vm
 }
@@ -140,11 +145,17 @@ func decodeInstructionTyped(bytes []byte) Instruction {
 	}
 }
 
+// Takes an absolute stack pointer (pointing to address in global memory segment) and
+// converts it to a stack pointer relative to the current stack slice
+func (vm *VM) computeRelativeStackPointer(sp uint32) uint32 {
+	return sp - vm.stackOffsetBytes
+}
+
 // Takes an instruction and attempts to format it in 2 ways:
 //  1. if debug symbols available, use that to print original source
 //  2. if no debug symbols, approximate the code (labels will have been replaced with numbers)
 func formatInstructionStr(vm *VM, pc register, prefix string) string {
-	if pc < vm.processSizeBytes {
+	if pc < heapSizeBytes {
 		if vm.debugSym != nil {
 			// Use debug symbols to print source as it was when first read in
 			return fmt.Sprintf(prefix+" %d: %s", pc, vm.debugSym.source[int(pc)])
@@ -155,12 +166,6 @@ func formatInstructionStr(vm *VM, pc register, prefix string) string {
 	}
 
 	return ""
-}
-
-// Takes an absolute stack pointer (pointing to address in global memory segment) and
-// converts it to a stack pointer relative to the current stack slice
-func (vm *VM) computeRelativeStackPointer(sp uint32) uint32 {
-	return sp - vm.stackOffsetBytes
 }
 
 func (vm *VM) printCurrentState() {
@@ -182,8 +187,9 @@ func (vm *VM) printDebugOutput() {
 }
 
 func (vm *VM) printProgram() {
-	for i := range vm.processSize {
-		fmt.Println(formatInstructionStr(vm, register(i)*instructionBytes, " "))
+	numInstructions := vm.processInstructionBytes / instructionBytes
+	for i := range numInstructions {
+		fmt.Println(formatInstructionStr(vm, register(i)*instructionBytes+reservedBytes, " "))
 	}
 }
 
@@ -305,17 +311,14 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 //
 // The current design of this function attempts to balance performance, readability and code reuse.
 func (vm *VM) execInstructions(singleStep bool) {
+	// processLen := uint32(len(vm.process))
 	for {
 		pc := vm.pc
-		if *pc >= vm.processSizeBytes {
-			vm.errcode = errProgramFinished
+		if *pc >= heapSizeBytes {
+			vm.errcode = errProcessFinished
 			return
 		}
 
-		// instr := decodeInstruction(vm.memory[*pc:])
-		// code := instr.code
-		// opreg := instr.register
-		// oparg := instr.arg
 		code, opreg, oparg := decodeInstruction(vm.memory[*pc:])
 
 		*pc += instructionBytes
@@ -735,7 +738,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 		case exitNoArgs:
 			// Sets the pc to be one after the last instruction
-			*pc = vm.processSizeBytes
+			*pc = heapSizeBytes
 
 		default:
 			// Shouldn't get here since we preprocess+parse all source into
