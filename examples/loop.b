@@ -8,7 +8,7 @@
     write 0 2           // write <port> <command> - port 0 is the timer interrupt device
     pop 4               // remove result of write from stack
 
-    const 1000000000
+    const 1000000
     rstore 2            // loads count into register[2]
 
 loop:

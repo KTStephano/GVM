@@ -123,7 +123,7 @@ package gvm
 			cmps
 			cmpf
 
-			write <port> <command>
+			write <port> <command> (port is a device index from 0-15)
 				-> if command = 0, performs get hardware device info
 					when this completes the stack will contain:
 						-> stack[0] = HWID
@@ -332,7 +332,7 @@ func (b Bytecode) IsHardwareDeviceOp() bool {
 
 // True if the bytecode requires an argument to be paired with it, such as const X
 func (b Bytecode) NumRequiredOpArgs() int {
-	if b == Const || b == Byte || b.IsRegisterOp() {
+	if b == Const || b == Byte || b.IsRegisterOp() || b == Srload || b == Srstore || b == Sysint {
 		return 1
 	} else if b.IsHardwareDeviceOp() {
 		return 2

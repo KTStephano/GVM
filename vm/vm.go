@@ -77,24 +77,39 @@ const (
 	// Reserved bytes are where we store the interrupt vector table
 	maxInterrupts           uint32 = 64
 	maxHWDevices            uint32 = 16
-	maxRestrictedInterrupts uint32 = 24
-	maxPublicInterrupts     uint32 = maxInterrupts - (maxHWDevices + maxRestrictedInterrupts)
-	maxNestedInterrupts     uint32 = 8
+	maxRestrictedInterrupts uint32 = maxHWDevices + 24
+	maxPublicInterrupts     uint32 = maxInterrupts - maxRestrictedInterrupts
 
 	reservedBytes        uint32 = maxInterrupts * varchBytes
 	numRegisters         uint32 = 32
 	numReservedRegisters uint32 = 8
 	heapSizeBytes        uint32 = 65536
+
+	// These are the memory address ranges that the interrupts occupy
+	// [0, interruptsAddrRange) -> includes privileged and unprivileged
+	interruptsAddrRange uint32 = reservedBytes
+	// [0, restrictedInterruptsAddrRange)
+	restrictedInterruptsAddrRange uint32 = maxRestrictedInterrupts * varchBytes
+	// Lower addresses are occupied by the restricted interrupts
+	// [restrictedInterruptsAddrRange, publicInterruptsAddrRange)
+	publicInterruptsAddrRange uint32 = restrictedInterruptsAddrRange + maxPublicInterrupts*varchBytes
 )
 
 var (
-	errProcessFinished    = errors.New("ran out of instructions")
+	errSystemShutdown     = errors.New("system poweroff requested")
 	errSegmentationFault  = errors.New("segmentation fault")
 	errDivisionByZero     = errors.New("division by zero")
 	errUnknownInstruction = errors.New("instruction not recognized")
 	errIllegelInstruction = errors.New("illegal instruction (privilege too low)")
 	errIO                 = errors.New("input-output error")
 )
+
+// Push the number of reserved bytes and the length of the process instruction bytes
+// as the initial arguments
+func (vm *VM) pushInitialArgumentsToStack() {
+	vm.pushStack(reservedBytes)
+	vm.pushStack(vm.processInstructionBytes)
+}
 
 // Takes a program and returns a VM that's ready to execute the program from
 // the beginning
@@ -108,19 +123,23 @@ func NewVirtualMachine(program Program) *VM {
 	vm.pc = &vm.pubRegisters[0]
 	vm.sp = &vm.pubRegisters[1]
 	vm.mode = &vm.registers[numRegisters]
-	// Set stack pointer to be 1 after the last valid stack address
-	// (indexing this will trigger a seg fault)
-	*vm.sp = heapSizeBytes
 
 	// Set process start address
 	*vm.pc = reservedBytes
+
+	// Set stack pointer to be 1 after the last valid stack address
+	// (indexing this will trigger a seg fault)
+	*vm.sp = heapSizeBytes
 
 	// Set available segment to initially point to entire memory region
 	vm.activeSegment = vm.memory[:]
 
 	// Set up devices
-	vm.devices[0] = newSystemTimer(DeviceBaseInfo{Port: 0, ResponseChan: vm.deviceResponseChan})
-	vm.devices[3] = newMemoryManagement(DeviceBaseInfo{Port: 3 * varchBytes, ResponseChan: vm.deviceResponseChan}, vm)
+	vm.devices[0] = newSystemTimer(DeviceBaseInfo{InterruptAddr: 0, ResponseChan: vm.deviceResponseChan})
+	vm.devices[1] = newPowerController(DeviceBaseInfo{InterruptAddr: 1 * varchBytes, ResponseChan: vm.deviceResponseChan}, vm)
+	vm.devices[2] = newMemoryManagement(DeviceBaseInfo{InterruptAddr: 2 * varchBytes, ResponseChan: vm.deviceResponseChan}, vm)
+
+	// Initialize remainder of device slots with nodevice marker
 	for i := 0; i < int(maxHWDevices); i++ {
 		if vm.devices[i] == nil {
 			vm.devices[i] = newNoDevice()
@@ -147,11 +166,7 @@ func NewVirtualMachine(program Program) *VM {
 	}
 
 	vm.processInstructionBytes = uint32(len(program.instructions)) * instructionBytes
-
-	// Push the number of reserved bytes and the length of the process instruction bytes
-	// as the initial arguments
-	vm.pushStack(reservedBytes)
-	vm.pushStack(vm.processInstructionBytes)
+	vm.pushInitialArgumentsToStack()
 
 	return vm
 }
@@ -284,6 +299,13 @@ func (vm *VM) popStackx2Uint32() (uint32, uint32) {
 	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:])
 }
 
+// Returns the top 3 stack values (as uint32) and moves the stack pointer forward
+func (vm *VM) popStackx3Uint32() (uint32, uint32, uint32) {
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
+	*vm.sp += varchBytesx3
+	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:]), uint32FromBytes(bytes[varchBytesx2:])
+}
+
 // Pops the first argument, peeks the second
 func (vm *VM) popPeekStack() ([]byte, []byte) {
 	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
@@ -359,29 +381,39 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 // The current design of this function attempts to balance performance, readability and code reuse.
 func (vm *VM) execInstructions(singleStep bool) {
 	for {
-		pc := vm.pc
-		if *pc >= heapSizeBytes {
-			vm.errcode = errProcessFinished
+		// Possible this was set to non-nil during poweroff
+		if vm.errcode != nil {
 			return
 		}
+
+		pc := vm.pc
+		// if *pc >= heapSizeBytes {
+		// 	vm.errcode = errProcessFinished
+		// 	return
+		// }
 
 		var resp *Response
 		var handlerAddr uint32
 		select {
 		case resp = <-vm.deviceResponseChan:
-			handlerAddr = uint32FromBytes(vm.memory[resp.port:])
+			handlerAddr = uint32FromBytes(vm.memory[resp.interruptAddr:])
 		default:
 		}
 
 		if handlerAddr != 0 {
 			sp := *vm.sp
 
+			// Store state related to current frame first
 			vm.pushStack(*pc)
 			vm.pushStack(sp)
+			vm.pushStack(*vm.mode)
+
+			// Store response information next
 			vm.pushStackSegment(resp.data)
 			vm.pushStack(uint32(len(resp.data)))
 			vm.pushStack(resp.id)
 
+			// Redirect program counter to the handler's address
 			*pc = handlerAddr
 		}
 
@@ -821,7 +853,25 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 			// Allow memory management device to potentially update memory bounds (if store
 			// register was vm.mode)
-			vm.devices[3].TrySend(0, 3, nil)
+			vm.devices[2].TrySend(0, 3, nil)
+
+		case sysintOneArg:
+			if oparg < restrictedInterruptsAddrRange {
+				// Perform privilege check to make sure calling code can actually initiate a
+				// privileged interrupt
+				if *vm.mode != 0 {
+					vm.errcode = errIllegelInstruction
+					return
+				}
+			}
+
+			// Push caller frame info to the stack so we can resume later
+			vm.pushStack(*pc)
+			vm.pushStack(*vm.sp)
+			vm.pushStack(*vm.mode)
+
+			// Update the program counter to be the interrupt handler's address
+			*pc = uint32FromBytes(vm.memory[oparg:])
 
 		case resumeNoArgs:
 			// privilege check
@@ -830,7 +880,15 @@ func (vm *VM) execInstructions(singleStep bool) {
 				return
 			}
 
-			prevSp, prevPc := vm.popStackx2Uint32()
+			prevMode, prevSp, prevPc := vm.popStackx3Uint32()
+			// Since resume is a privileged instruction, we know the current mode must be 0
+			// If prevMode is anything other than 0 (unprivileged), update the mode and notify memory manager
+			if prevMode != 0 {
+				*vm.mode = prevMode
+				// Allow memory management device to potentially update memory bounds
+				vm.devices[2].TrySend(0, 3, nil)
+			}
+
 			*vm.sp = prevSp
 			*vm.pc = prevPc
 
@@ -855,15 +913,15 @@ func (vm *VM) execInstructions(singleStep bool) {
 				vm.pushStack(vm.devices[opreg].TrySend(interactionId, oparg, data))
 			}
 
-		case exitNoArgs:
+		case haltNoArgs:
 			// privilege check
 			if *vm.mode != 0 {
 				vm.errcode = errIllegelInstruction
 				return
 			}
 
-			// Sets the pc to be one after the last instruction
-			*pc = heapSizeBytes
+			// Sets the pc to be this instruction (continues loop until interrupt)
+			*pc -= instructionBytes
 
 		default:
 			// Shouldn't get here since we preprocess+parse all source into

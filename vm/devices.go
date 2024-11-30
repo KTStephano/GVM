@@ -25,8 +25,8 @@ type Request struct {
 type InteractionID = uint32
 
 type Response struct {
-	// This is the hardware port we're communicating through
-	port uint32
+	// This is the interrupt handler address associated with this device
+	interruptAddr uint32
 	// This should either be 0 (no ID) or a unique number that represents the
 	// send-receive interaction so that the software knows what this is in response to
 	id   InteractionID
@@ -46,24 +46,27 @@ type HardwareDevice interface {
 	// arguments: id, command, data
 	TrySend(InteractionID, uint32, []byte) StatusCode
 
-	// When a power down or power cycle request comes in, this will be called to let the device
-	// know to cleanup
+	// When a power cycle on -> off -> on comes in, this lets the device know to clear previous
+	// state and restart
+	Reset()
+
+	// When a power down or poweroff request comes in, this lets the device know to end
 	Close()
 }
 
 // Data that all hardware devices will need
 type DeviceBaseInfo struct {
 	// Specifies the entry into the interrupt table to match up with
-	Port         uint32
-	ResponseChan chan *Response
+	InterruptAddr uint32
+	ResponseChan  chan *Response
 }
 
 // deviceIndex can usually be 0 unless trying to multiplex one port to multiple devices
-func NewResponse(port uint32, id InteractionID, data []byte) *Response {
+func NewResponse(interruptAddr uint32, id InteractionID, data []byte) *Response {
 	return &Response{
-		port: port,
-		id:   id,
-		data: data,
+		interruptAddr: interruptAddr,
+		id:            id,
+		data:          data,
 	}
 }
 
@@ -94,6 +97,7 @@ type memoryManagement struct {
 	maxHeapAddr uint32
 }
 
+// ------- Begin no device marker
 func newNoDevice() HardwareDevice {
 	return &nodevice{}
 }
@@ -106,8 +110,11 @@ func (*nodevice) TrySend(InteractionID, uint32, []byte) StatusCode {
 	return StatusDeviceNotFound
 }
 
-func (nd *nodevice) Close() {}
+func (*nodevice) Reset() {}
 
+func (*nodevice) Close() {}
+
+// ------- Begin system timer
 func newSystemTimer(base DeviceBaseInfo) HardwareDevice {
 	return &systemTimer{
 		DeviceBaseInfo: base,
@@ -130,12 +137,64 @@ func (t *systemTimer) TrySend(id InteractionID, command uint32, data []byte) Sta
 		<-timer.C
 		// Use nil data in response since calling code will interpret our response
 		// to mean the timer expired
-		t.ResponseChan <- NewResponse(t.Port, id, nil)
+		t.ResponseChan <- NewResponse(t.InterruptAddr, id, nil)
 	}(time.Duration(uint32FromBytes(data)))
 
 	return StatusDeviceReady
 }
 
+func (t *systemTimer) Reset() {
+
+}
+
+func (t *systemTimer) Close() {
+
+}
+
+// ------- Begin power controller
+func newPowerController(base DeviceBaseInfo, vm *VM) HardwareDevice {
+	return &powerController{DeviceBaseInfo: base, vm: vm}
+}
+
+func (p *powerController) GetInfo() HardwareDeviceInfo {
+	return HardwareDeviceInfo{
+		HWID: 0x02,
+	}
+}
+
+// Command of 1 -> get status
+// Command of 2 -> perform restart
+// Command of 3 -> perform poweroff
+func (p *powerController) TrySend(_ InteractionID, command uint32, _ []byte) StatusCode {
+	if command == 2 {
+		// Update the CPU mode to privileged
+		*p.vm.mode = 0
+		// Reset program counter and stack pointer
+		*p.vm.pc = reservedBytes
+		*p.vm.sp = heapSizeBytes
+
+		for _, device := range p.vm.devices {
+			device.Reset()
+		}
+
+		// Set up the stack with expected initial arguments
+		p.vm.pushInitialArgumentsToStack()
+	} else if command == 3 {
+		for _, device := range p.vm.devices {
+			device.Reset()
+		}
+
+		p.vm.errcode = errSystemShutdown
+	}
+
+	return StatusDeviceReady
+}
+
+func (*powerController) Reset() {}
+
+func (*powerController) Close() {}
+
+// ------- Begin memory management unit
 func newMemoryManagement(base DeviceBaseInfo, vm *VM) HardwareDevice {
 	return &memoryManagement{
 		DeviceBaseInfo: base,
@@ -145,13 +204,9 @@ func newMemoryManagement(base DeviceBaseInfo, vm *VM) HardwareDevice {
 	}
 }
 
-func (t *systemTimer) Close() {
-
-}
-
 func (m *memoryManagement) GetInfo() HardwareDeviceInfo {
 	return HardwareDeviceInfo{
-		HWID: 0x01,
+		HWID: 0x03,
 	}
 }
 
@@ -179,6 +234,9 @@ func (m *memoryManagement) TrySend(id InteractionID, command uint32, data []byte
 	return StatusDeviceReady
 }
 
-func (m *memoryManagement) Close() {
-
+func (m *memoryManagement) Reset() {
+	m.minHeapAddr, m.maxHeapAddr = 0, uint32(len(m.vm.memory))
+	m.updateBounds()
 }
+
+func (m *memoryManagement) Close() {}

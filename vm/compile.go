@@ -117,6 +117,7 @@ const (
 	// flushNoArgs  uint16 = uint16(Flush)
 	// readcNoArgs  uint16 = uint16(Readc)
 
+	sysintOneArg uint16 = 0x0100 | uint16(Sysint)
 	resumeNoArgs uint16 = uint16(Resume)
 
 	// readTwoArgs  uint16 = 0x0200 | uint16(Read)
@@ -150,7 +151,7 @@ const (
 	srLoadOneArg  uint16 = 0x0100 | uint16(Srload)
 	srStoreOneArg uint16 = 0x0100 | uint16(Srstore)
 
-	exitNoArgs uint16 = uint16(Halt)
+	haltNoArgs uint16 = uint16(Halt)
 )
 
 // Allows us to easily find and replace commands from start to end of line

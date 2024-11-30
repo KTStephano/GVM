@@ -72,7 +72,7 @@ func (vm *VM) RunProgramDebugMode() {
 
 			if vm.errcode != nil {
 				vm.printDebugOutput()
-				if vm.errcode != errProcessFinished {
+				if vm.errcode != errSystemShutdown {
 					// pc-instructionBytes should be the instruction that failed
 					fmt.Println(formatInstructionStr(vm, *vm.pc-instructionBytes, vm.errcode.Error()))
 				}
@@ -129,7 +129,7 @@ func (vm *VM) RunProgram() {
 
 	vm.execInstructions(false)
 	if err := vm.errcode; err != nil {
-		if err != errProcessFinished {
+		if err != errSystemShutdown {
 			fmt.Println(err)
 		}
 	}
