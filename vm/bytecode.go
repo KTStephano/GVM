@@ -8,10 +8,19 @@ package gvm
 			- register 0 is the program counter
 			- register 1 is the stack pointer
 			- registers indexed 2 through 31 are general purpose, 32-bit
+			- 8 specialized registers (sr/srs)
+			- sr 0 is the CPU "mode" - 0 means unprivileged, 1 means privileged
+			- sr 1 is the memory segment start (when in unprivileged mode)
+			- sr 2 is the memory segment end (when in unprivileged mode)
+			- srs 3-5 are reserved
+			- srs 6-7 can be used for anything
 			- supports single stepping through instructions
 			- supports setting program breakpoints
 
-	The stack is 64kb in size minimum
+	The memory segment is 64kb in size minimum
+		- bytes 0-255 are reserved for the interrupt vector table (IVT)
+		- startup program starts at byte 256
+		- by default, entire memory segment is read/write at startup
 
 	This bytecode instruction set attempts to strike a balance between the extreme simplicity
 	of a stack-based design and the increased complexity but better performance (at least for interpreter VMs) of
@@ -37,9 +46,9 @@ package gvm
 			byte   <constant> (pushes byte value onto the stack)
 			const  <constant> (pushes const value onto stack (can be a label))
 
-			load   <register> (loads value of register)
-			store  <register> (stores value of stack[0] to register)
-			kstore <register> (stores value of stack[0] to register and keeps value on the stack)
+			rload   <register> (loads value of register)
+			rstore  <register> (stores value of stack[0] to register)
+			rkstore <register> (stores value of stack[0] to register and keeps value on the stack)
 
 			loadp8, loadp16, loadp32 (loads 8, 16 or 32 bit value from address at stack[0], widens to 32 bits)
 				loadpX are essentially stack[0] = *stack[0]
@@ -114,10 +123,25 @@ package gvm
 			cmps
 			cmpf
 
-			writeb (writes 1 8-bit value to stdout buffer from address stored at stack[0])
-			writec (writes 1 32-bit value to stdout buffer from stack[0])
-			flush  (flushes stdout buffer to console)
-			readc  (reads 1 character from stdin - pushes to stack as 32-bit value)
+			write <port> <command>
+				-> if command = 0, performs get hardware device info
+					when this completes the stack will contain:
+						-> stack[0] = HWID
+						-> stack[1] = num metadata bytes (can be 0)
+						-> stac[2]+ = metadata bytes
+
+				-> if command = 1, performs get hardware device status
+					when this completes it will push a 32-bit status code to the stack:
+						-> 0x00 = device not found
+						-> 0x01 = device ready (write req would succeed)
+						-> 0x02 = device busy (write req would fail)
+
+				-> otherwise
+					stack[0] should be the interaction id (for identifying request when response comes in)
+					stack[1] should be the number of bytes to write
+					stack[2] should be the start of the data to write
+
+					when this completes the stack will contain a status code the same as if command = 1 (see above)
 
 			exit (stops the program)
 
@@ -143,11 +167,11 @@ type Bytecode byte
 const (
 	Nop Bytecode = 0x00
 
-	Byte   Bytecode = 0x01
-	Const  Bytecode = 0x02
-	Load   Bytecode = 0x03
-	Store  Bytecode = 0x04
-	Kstore Bytecode = 0x05
+	Byte    Bytecode = 0x01
+	Const   Bytecode = 0x02
+	Rload   Bytecode = 0x03
+	Rstore  Bytecode = 0x04
+	Rkstore Bytecode = 0x05
 
 	Loadp8   Bytecode = 0x10
 	Loadp16  Bytecode = 0x11
@@ -188,11 +212,6 @@ const (
 	Cmps Bytecode = 0x48
 	Cmpf Bytecode = 0x49
 
-	Writeb Bytecode = 0x50
-	Writec Bytecode = 0x51
-	Flush  Bytecode = 0x52
-	Readc  Bytecode = 0x53
-
 	Raddi   Bytecode = 0x60
 	Raddf   Bytecode = 0x61
 	Rsubi   Bytecode = 0x62
@@ -204,7 +223,14 @@ const (
 	Rshiftr Bytecode = 0x68
 	Rshiftl Bytecode = 0x69
 
-	Exit Bytecode = 0xFF
+	Sysint Bytecode = 0x70
+
+	Write Bytecode = 0xF1
+
+	Srload  Bytecode = 0xF2
+	Srstore Bytecode = 0xF3
+
+	Halt Bytecode = 0xFF
 )
 
 var (
@@ -213,9 +239,9 @@ var (
 		"nop":      Nop,
 		"byte":     Byte,
 		"const":    Const,
-		"load":     Load,
-		"store":    Store,
-		"kstore":   Kstore,
+		"rload":    Rload,
+		"rstore":   Rstore,
+		"rkstore":  Rkstore,
 		"loadp8":   Loadp8,
 		"loadp16":  Loadp16,
 		"loadp32":  Loadp32,
@@ -251,10 +277,6 @@ var (
 		"cmpu":     Cmpu,
 		"cmps":     Cmps,
 		"cmpf":     Cmpf,
-		"writeb":   Writeb,
-		"writec":   Writec,
-		"flush":    Flush,
-		"readc":    Readc,
 		"raddi":    Raddi,
 		"raddf":    Raddf,
 		"rsubi":    Rsubi,
@@ -265,7 +287,11 @@ var (
 		"rdivf":    Rdivf,
 		"rshiftl":  Rshiftl,
 		"rshiftr":  Rshiftr,
-		"exit":     Exit,
+		"sysint":   Sysint,
+		"write":    Write,
+		"srload":   Srload,
+		"srstore":  Srstore,
+		"halt":     Halt,
 	}
 
 	// Maps from instruction -> string (built from strToInstrMap)
@@ -283,12 +309,12 @@ func (b Bytecode) String() string {
 
 // True if the bytecode deals with register load/store/arithmetic/logic
 func (b Bytecode) IsRegisterOp() bool {
-	return b == Load || b.IsRegisterWriteOp()
+	return b == Rload || b.IsRegisterWriteOp()
 }
 
 // Returns true for all instructions that write to a register
 func (b Bytecode) IsRegisterWriteOp() bool {
-	return b == Store || b == Kstore || b.IsRegisterReadWriteOp()
+	return b == Rstore || b == Rkstore || b.IsRegisterReadWriteOp()
 }
 
 // Returns true for all instructions that both read and write to a register
@@ -297,10 +323,17 @@ func (b Bytecode) IsRegisterReadWriteOp() bool {
 		b == Rshiftl || b == Rshiftr
 }
 
+// Returns true if the instruction deals with hardware device interfacing
+func (b Bytecode) IsHardwareDeviceOp() bool {
+	return b == Write
+}
+
 // True if the bytecode requires an argument to be paired with it, such as const X
 func (b Bytecode) NumRequiredOpArgs() int {
 	if b == Const || b == Byte || b.IsRegisterOp() {
 		return 1
+	} else if b.IsHardwareDeviceOp() {
+		return 2
 	} else {
 		return 0
 	}

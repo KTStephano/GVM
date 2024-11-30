@@ -37,9 +37,9 @@ const (
 
 	byteOneArg   uint16 = 0x0100 | uint16(Byte)
 	constOneArg  uint16 = 0x0100 | uint16(Const)
-	loadOneArg   uint16 = 0x0100 | uint16(Load)
-	storeOneArg  uint16 = 0x0100 | uint16(Store)
-	kstoreOneArg uint16 = 0x0100 | uint16(Kstore)
+	loadOneArg   uint16 = 0x0100 | uint16(Rload)
+	storeOneArg  uint16 = 0x0100 | uint16(Rstore)
+	kstoreOneArg uint16 = 0x0100 | uint16(Rkstore)
 
 	loadp8NoArgs   uint16 = uint16(Loadp8)
 	loadp16NoArgs  uint16 = uint16(Loadp16)
@@ -112,10 +112,13 @@ const (
 	cmpsNoArgs uint16 = uint16(Cmps)
 	cmpfNoArgs uint16 = uint16(Cmpf)
 
-	writebNoArgs uint16 = uint16(Writeb)
-	writecNoArgs uint16 = uint16(Writec)
-	flushNoArgs  uint16 = uint16(Flush)
-	readcNoArgs  uint16 = uint16(Readc)
+	// writebNoArgs uint16 = uint16(Writeb)
+	// writecNoArgs uint16 = uint16(Writec)
+	// flushNoArgs  uint16 = uint16(Flush)
+	// readcNoArgs  uint16 = uint16(Readc)
+
+	// readTwoArgs  uint16 = 0x0200 | uint16(Read)
+	writeTwoArgs uint16 = 0x0200 | uint16(Write)
 
 	raddiOneArg  uint16 = 0x0100 | uint16(Raddi)
 	raddiTwoArgs uint16 = 0x0200 | uint16(Raddi)
@@ -142,7 +145,7 @@ const (
 	rshiftROneArg  uint16 = 0x0100 | uint16(Rshiftr)
 	rshiftRTwoargs uint16 = 0x0200 | uint16(Rshiftr)
 
-	exitNoArgs uint16 = uint16(Exit)
+	exitNoArgs uint16 = uint16(Halt)
 )
 
 // Allows us to easily find and replace commands from start to end of line
@@ -422,8 +425,11 @@ func parseInputLine(line [3]string) (Instruction, error) {
 		// 2nd 32-bit argument
 		return NewInstruction(byte(numArgs), code, uint16(args[0]), args[1]), nil
 	} else {
-		// Non-register instructions only accept 1 32-bit argument
-		return NewInstruction(byte(numArgs), code, 0, args[0]), nil
+		if numArgs > 1 {
+			return NewInstruction(byte(numArgs), code, uint16(args[0]), args[1]), nil
+		} else {
+			return NewInstruction(byte(numArgs), code, 0, args[0]), nil
+		}
 	}
 }
 

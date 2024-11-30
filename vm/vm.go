@@ -33,6 +33,10 @@ type VM struct {
 	activeSegment []byte
 	memory        [heapSizeBytes]byte
 
+	devices            [maxHWDevices]HardwareDevice
+	deviceResponseChan chan *Response
+	handlingInterrupt  bool
+
 	// For when the stack size has been restricted to a certain region of memory
 	stackOffsetBytes uint32
 
@@ -65,11 +69,17 @@ const (
 	// 4 bytes since our virtual architecture is 32-bit
 	varchBytes   register = 4
 	varchBytesx2 register = 2 * varchBytes
+	varchBytesx3 register = 3 * varchBytes
 
 	// Reserved bytes are where we store the interrupt vector table
-	reservedBytes uint32 = 32 * varchBytes
-	numRegisters  uint32 = 32
-	heapSizeBytes uint32 = 65536
+	maxInterrupts           uint32 = 64
+	maxHWDevices            uint32 = 16
+	maxRestrictedInterrupts uint32 = 24
+	maxPublicInterrupts     uint32 = maxInterrupts - (maxHWDevices + maxRestrictedInterrupts)
+	reservedBytes           uint32 = maxInterrupts * varchBytes
+	numRegisters            uint32 = 32
+	numReservedRegisters    uint32 = 8
+	heapSizeBytes           uint32 = 65536
 )
 
 var (
@@ -84,7 +94,8 @@ var (
 // the beginning
 func NewVirtualMachine(program Program) *VM {
 	vm := &VM{
-		stdin: bufio.NewReader(os.Stdin),
+		stdin:              bufio.NewReader(os.Stdin),
+		deviceResponseChan: make(chan *Response),
 	}
 
 	vm.pc = &vm.registers[0]
@@ -98,6 +109,12 @@ func NewVirtualMachine(program Program) *VM {
 
 	// Set available segment to initially point to entire memory region
 	vm.activeSegment = vm.memory[:]
+
+	// Set up devices
+	vm.devices[0] = newSystemTimer(DeviceBaseInfo{Port: 0, ResponseChan: vm.deviceResponseChan})
+	for i := 1; i < int(maxHWDevices); i++ {
+		vm.devices[i] = newNoDevice()
+	}
 
 	if program.debugSymMap != nil {
 		vm.debugOut = &strings.Builder{}
@@ -265,6 +282,15 @@ func (vm *VM) pushStack(value register) {
 	uint32ToBytes(value, vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):])
 }
 
+// Pushes a sequence of bytes to the stack
+func (vm *VM) pushStackSegment(data []byte) {
+	*vm.sp -= register(len(data))
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
+	for i := register(0); i < uint32(len(data)); i++ {
+		bytes[i] = data[i]
+	}
+}
+
 // Peeks the first item off the stack, converts it to uint32 and returns the stack
 // bytes that are safe to write to
 func getStackOneInput(vm *VM) (uint32, []byte) {
@@ -311,7 +337,6 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 //
 // The current design of this function attempts to balance performance, readability and code reuse.
 func (vm *VM) execInstructions(singleStep bool) {
-	// processLen := uint32(len(vm.process))
 	for {
 		pc := vm.pc
 		if *pc >= heapSizeBytes {
@@ -319,8 +344,30 @@ func (vm *VM) execInstructions(singleStep bool) {
 			return
 		}
 
-		code, opreg, oparg := decodeInstruction(vm.memory[*pc:])
+		var resp *Response
+		var handlerAddr uint32
+		if !vm.handlingInterrupt {
+			select {
+			case resp = <-vm.deviceResponseChan:
+				handlerAddr = uint32FromBytes(vm.memory[resp.port:])
+			default:
+			}
+		}
 
+		if handlerAddr != 0 {
+			vm.handlingInterrupt = true
+			sp := *vm.sp
+
+			vm.pushStackSegment(resp.data)
+			vm.pushStack(uint32(len(resp.data)))
+			vm.pushStack(resp.id)
+			vm.pushStack(*pc)
+			vm.pushStack(sp)
+
+			*pc = handlerAddr
+		}
+
+		code, opreg, oparg := decodeInstruction(vm.memory[*pc:])
 		*pc += instructionBytes
 
 		switch code {
@@ -720,21 +767,35 @@ func (vm *VM) execInstructions(singleStep bool) {
 			uint32ToBytes(compare(math.Float32frombits(x), math.Float32frombits(y)), bytes)
 
 		// Begin console IO instructions
-		case writebNoArgs:
-			addr := vm.computeRelativeStackPointer(vm.popStackUint32())
-			vm.stdout.WriteByte(vm.activeSegment[addr])
-		case writecNoArgs:
-			character := rune(vm.popStackUint32())
-			vm.stdout.WriteRune(character)
-		case flushNoArgs:
-			vm.stdout.Flush()
-		case readcNoArgs:
-			character, _, err := vm.stdin.ReadRune()
-			if err != nil {
-				vm.errcode = errIO
-				return
+		// case writebNoArgs:
+		// 	addr := vm.computeRelativeStackPointer(vm.popStackUint32())
+		// 	vm.stdout.WriteByte(vm.activeSegment[addr])
+		// case writecNoArgs:
+		// 	character := rune(vm.popStackUint32())
+		// 	vm.stdout.WriteRune(character)
+		// case flushNoArgs:
+		// 	vm.stdout.Flush()
+		// case readcNoArgs:
+		// 	character, _, err := vm.stdin.ReadRune()
+		// 	if err != nil {
+		// 		vm.errcode = errIO
+		// 		return
+		// 	}
+		// 	vm.pushStack(uint32(character))
+
+		case writeTwoArgs:
+			if oparg == 0 {
+				hwinfo := vm.devices[opreg].GetInfo()
+				vm.pushStackSegment(hwinfo.Metadata)
+				vm.pushStack(uint32(len(hwinfo.Metadata)))
+				vm.pushStack(hwinfo.HWID)
+			} else {
+				interactionId, numBytes := vm.popStackx2Uint32()
+				sptr := *vm.sp
+				data := vm.activeSegment[sptr : sptr+numBytes]
+
+				vm.pushStack(vm.devices[opreg].TrySend(interactionId, oparg, data))
 			}
-			vm.pushStack(uint32(character))
 
 		case exitNoArgs:
 			// Sets the pc to be one after the last instruction
