@@ -23,19 +23,22 @@ type debugSymbols struct {
 }
 
 type VM struct {
-	registers [numRegisters]register
-	pc        *register // program counter
-	sp        *register // stack pointer (grows down (largest address towards smallest address))
+	// contains all pubRegisters including special reserved
+	registers [numRegisters + numReservedRegisters]register
+	// public registers (used for load/store)
+	pubRegisters []register
+	pc           *register // program counter
+	sp           *register // stack pointer (grows down (largest address towards smallest address))
+	mode         *register // CPU mode where 0x00 = max privilege, 0x01 = min privilege
 
+	memory [heapSizeBytes]byte
 	// activeSegment is a byte slice into the VM's memory
 	// At the beginning it points to the entire available memory range, but can be restricted at
 	// runtime
 	activeSegment []byte
-	memory        [heapSizeBytes]byte
 
 	devices            [maxHWDevices]HardwareDevice
 	deviceResponseChan chan *Response
-	handlingInterrupt  bool
 
 	// For when the stack size has been restricted to a certain region of memory
 	stackOffsetBytes uint32
@@ -76,10 +79,12 @@ const (
 	maxHWDevices            uint32 = 16
 	maxRestrictedInterrupts uint32 = 24
 	maxPublicInterrupts     uint32 = maxInterrupts - (maxHWDevices + maxRestrictedInterrupts)
-	reservedBytes           uint32 = maxInterrupts * varchBytes
-	numRegisters            uint32 = 32
-	numReservedRegisters    uint32 = 8
-	heapSizeBytes           uint32 = 65536
+	maxNestedInterrupts     uint32 = 8
+
+	reservedBytes        uint32 = maxInterrupts * varchBytes
+	numRegisters         uint32 = 32
+	numReservedRegisters uint32 = 8
+	heapSizeBytes        uint32 = 65536
 )
 
 var (
@@ -87,6 +92,7 @@ var (
 	errSegmentationFault  = errors.New("segmentation fault")
 	errDivisionByZero     = errors.New("division by zero")
 	errUnknownInstruction = errors.New("instruction not recognized")
+	errIllegelInstruction = errors.New("illegal instruction (privilege too low)")
 	errIO                 = errors.New("input-output error")
 )
 
@@ -98,8 +104,10 @@ func NewVirtualMachine(program Program) *VM {
 		deviceResponseChan: make(chan *Response),
 	}
 
-	vm.pc = &vm.registers[0]
-	vm.sp = &vm.registers[1]
+	vm.pubRegisters = vm.registers[:numRegisters]
+	vm.pc = &vm.pubRegisters[0]
+	vm.sp = &vm.pubRegisters[1]
+	vm.mode = &vm.registers[numRegisters]
 	// Set stack pointer to be 1 after the last valid stack address
 	// (indexing this will trigger a seg fault)
 	*vm.sp = heapSizeBytes
@@ -112,8 +120,11 @@ func NewVirtualMachine(program Program) *VM {
 
 	// Set up devices
 	vm.devices[0] = newSystemTimer(DeviceBaseInfo{Port: 0, ResponseChan: vm.deviceResponseChan})
-	for i := 1; i < int(maxHWDevices); i++ {
-		vm.devices[i] = newNoDevice()
+	vm.devices[3] = newMemoryManagement(DeviceBaseInfo{Port: 3 * varchBytes, ResponseChan: vm.deviceResponseChan}, vm)
+	for i := 0; i < int(maxHWDevices); i++ {
+		if vm.devices[i] == nil {
+			vm.devices[i] = newNoDevice()
+		}
 	}
 
 	if program.debugSymMap != nil {
@@ -191,7 +202,7 @@ func (vm *VM) printCurrentState() {
 		fmt.Println(instr)
 	}
 
-	fmt.Println("  registers>", vm.registers)
+	fmt.Println("  registers>", vm.pubRegisters)
 	fmt.Println("  stack>", vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):])
 
 	vm.printDebugOutput()
@@ -233,6 +244,16 @@ func float32ToBytes(f float32, bytes []byte) {
 // Returns current top of stack without moving stack pointer
 func (vm *VM) peekStack() []byte {
 	return vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
+}
+
+// Reserves space on the stack without returning anything
+func (vm *VM) pushStackFast(bytes uint32) {
+	*vm.sp -= bytes
+}
+
+// Removes bytes from the stack without returning anything
+func (vm *VM) popStackFast(bytes uint32) {
+	*vm.sp += bytes
 }
 
 // Returns top of stack before moving stack pointer forward
@@ -346,23 +367,20 @@ func (vm *VM) execInstructions(singleStep bool) {
 
 		var resp *Response
 		var handlerAddr uint32
-		if !vm.handlingInterrupt {
-			select {
-			case resp = <-vm.deviceResponseChan:
-				handlerAddr = uint32FromBytes(vm.memory[resp.port:])
-			default:
-			}
+		select {
+		case resp = <-vm.deviceResponseChan:
+			handlerAddr = uint32FromBytes(vm.memory[resp.port:])
+		default:
 		}
 
 		if handlerAddr != 0 {
-			vm.handlingInterrupt = true
 			sp := *vm.sp
 
+			vm.pushStack(*pc)
+			vm.pushStack(sp)
 			vm.pushStackSegment(resp.data)
 			vm.pushStack(uint32(len(resp.data)))
 			vm.pushStack(resp.id)
-			vm.pushStack(*pc)
-			vm.pushStack(sp)
 
 			*pc = handlerAddr
 		}
@@ -377,13 +395,13 @@ func (vm *VM) execInstructions(singleStep bool) {
 		case constOneArg:
 			vm.pushStack(oparg)
 		case loadOneArg:
-			vm.pushStack(vm.registers[opreg])
+			vm.pushStack(vm.pubRegisters[opreg])
 		case storeOneArg:
 			regVal := uint32FromBytes(vm.popStack())
-			vm.registers[opreg] = register(regVal)
+			vm.pubRegisters[opreg] = register(regVal)
 		case kstoreOneArg:
 			regVal := uint32FromBytes(vm.peekStack())
-			vm.registers[opreg] = register(regVal)
+			vm.pubRegisters[opreg] = register(regVal)
 		case loadp8NoArgs:
 			bytes := vm.peekStack()
 			addr := vm.computeRelativeStackPointer(uint32FromBytes(bytes))
@@ -419,21 +437,21 @@ func (vm *VM) execInstructions(singleStep bool) {
 		case pushNoArgs:
 			// push with no args, meaning we pull # bytes from the stack
 			bytes := vm.popStackUint32()
-			*vm.sp -= register(bytes)
+			vm.pushStackFast(bytes)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
 		case pushOneArg:
 			// push <constant> meaning the byte value is inlined
-			*vm.sp -= register(oparg)
+			vm.pushStackFast(oparg)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
 		case popNoArgs:
 			bytes := vm.popStackUint32()
-			*vm.sp = *vm.sp + register(bytes)
+			vm.popStackFast(bytes)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
 		case popOneArg:
-			*vm.sp -= register(oparg)
+			vm.popStackFast(oparg)
 			// This will ensure we catch invalid stack addresses
 			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
 
@@ -512,50 +530,50 @@ func (vm *VM) execInstructions(singleStep bool) {
 		// Begin radd instructions
 		case raddiOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] += x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] += x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case raddiTwoArgs:
-			vm.registers[opreg] += oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] += oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 		case raddfOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) + math.Float32frombits(x))
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) + math.Float32frombits(x))
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case raddfTwoArgs:
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) + math.Float32frombits(oparg))
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) + math.Float32frombits(oparg))
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		// Begin rsub instructions
 		case rsubiOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] -= x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] -= x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rsubiTwoArgs:
-			vm.registers[opreg] -= oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] -= oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 		case rsubfOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) - math.Float32frombits(x))
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) - math.Float32frombits(x))
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rsubfTwoArgs:
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) - math.Float32frombits(oparg))
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) - math.Float32frombits(oparg))
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		// Begin rmul instructions
 		case rmuliOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] *= x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] *= x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rmuliTwoArgs:
-			vm.registers[opreg] *= oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] *= oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 		case rmulfOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) * math.Float32frombits(x))
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) * math.Float32frombits(x))
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rmulfTwoArgs:
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) * math.Float32frombits(oparg))
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) * math.Float32frombits(oparg))
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		// Begin rdiv instructions
 		case rdiviOneArg:
@@ -568,8 +586,8 @@ func (vm *VM) execInstructions(singleStep bool) {
 				return
 			}
 
-			vm.registers[opreg] /= x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] /= x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rdiviTwoArgs:
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
@@ -579,33 +597,33 @@ func (vm *VM) execInstructions(singleStep bool) {
 				return
 			}
 
-			vm.registers[opreg] /= oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] /= oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 		case rdivfOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) / math.Float32frombits(x))
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) / math.Float32frombits(x))
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rdivfTwoArgs:
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) / math.Float32frombits(oparg))
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) / math.Float32frombits(oparg))
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		// Begin register shift instructions
 		case rshiftLOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] <<= x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] <<= x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rshiftLTwoArgs:
-			vm.registers[opreg] <<= oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] <<= oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		case rshiftROneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] >>= x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] >>= x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 
 		case rshiftRTwoargs:
-			vm.registers[opreg] >>= oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] >>= oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		// Begin remainder instructions
 		case remuNoArgs:
@@ -783,7 +801,46 @@ func (vm *VM) execInstructions(singleStep bool) {
 		// 	}
 		// 	vm.pushStack(uint32(character))
 
+		case srLoadOneArg:
+			// privilege check
+			if *vm.mode != 0 {
+				vm.errcode = errIllegelInstruction
+				return
+			}
+
+			vm.pushStack(vm.registers[opreg])
+		case srStoreOneArg:
+			// privilege check
+			if *vm.mode != 0 {
+				vm.errcode = errIllegelInstruction
+				return
+			}
+
+			regVal := uint32FromBytes(vm.popStack())
+			vm.registers[opreg] = register(regVal)
+
+			// Allow memory management device to potentially update memory bounds (if store
+			// register was vm.mode)
+			vm.devices[3].TrySend(0, 3, nil)
+
+		case resumeNoArgs:
+			// privilege check
+			if *vm.mode != 0 {
+				vm.errcode = errIllegelInstruction
+				return
+			}
+
+			prevSp, prevPc := vm.popStackx2Uint32()
+			*vm.sp = prevSp
+			*vm.pc = prevPc
+
 		case writeTwoArgs:
+			// privilege check
+			if *vm.mode != 0 {
+				vm.errcode = errIllegelInstruction
+				return
+			}
+
 			if oparg == 0 {
 				hwinfo := vm.devices[opreg].GetInfo()
 				vm.pushStackSegment(hwinfo.Metadata)
@@ -794,10 +851,17 @@ func (vm *VM) execInstructions(singleStep bool) {
 				sptr := *vm.sp
 				data := vm.activeSegment[sptr : sptr+numBytes]
 
+				vm.popStackFast(numBytes)
 				vm.pushStack(vm.devices[opreg].TrySend(interactionId, oparg, data))
 			}
 
 		case exitNoArgs:
+			// privilege check
+			if *vm.mode != 0 {
+				vm.errcode = errIllegelInstruction
+				return
+			}
+
 			// Sets the pc to be one after the last instruction
 			*pc = heapSizeBytes
 

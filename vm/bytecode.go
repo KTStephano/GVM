@@ -137,9 +137,9 @@ package gvm
 						-> 0x02 = device busy (write req would fail)
 
 				-> otherwise
-					stack[0] should be the interaction id (for identifying request when response comes in)
-					stack[1] should be the number of bytes to write
-					stack[2] should be the start of the data to write
+					input stack[0] should be the interaction id (for identifying request when response comes in)
+					input stack[1] should be the number of bytes to write
+					input stack[2] should be the start of the data to write
 
 					when this completes the stack will contain a status code the same as if command = 1 (see above)
 
@@ -224,6 +224,7 @@ const (
 	Rshiftl Bytecode = 0x69
 
 	Sysint Bytecode = 0x70
+	Resume Bytecode = 0x71
 
 	Write Bytecode = 0xF1
 
@@ -288,6 +289,7 @@ var (
 		"rshiftl":  Rshiftl,
 		"rshiftr":  Rshiftr,
 		"sysint":   Sysint,
+		"resume":   Resume,
 		"write":    Write,
 		"srload":   Srload,
 		"srstore":  Srstore,

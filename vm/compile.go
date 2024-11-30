@@ -117,6 +117,8 @@ const (
 	// flushNoArgs  uint16 = uint16(Flush)
 	// readcNoArgs  uint16 = uint16(Readc)
 
+	resumeNoArgs uint16 = uint16(Resume)
+
 	// readTwoArgs  uint16 = 0x0200 | uint16(Read)
 	writeTwoArgs uint16 = 0x0200 | uint16(Write)
 
@@ -144,6 +146,9 @@ const (
 	rshiftLTwoArgs uint16 = 0x0200 | uint16(Rshiftl)
 	rshiftROneArg  uint16 = 0x0100 | uint16(Rshiftr)
 	rshiftRTwoargs uint16 = 0x0200 | uint16(Rshiftr)
+
+	srLoadOneArg  uint16 = 0x0100 | uint16(Srload)
+	srStoreOneArg uint16 = 0x0100 | uint16(Srstore)
 
 	exitNoArgs uint16 = uint16(Halt)
 )

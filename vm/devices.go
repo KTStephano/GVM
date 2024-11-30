@@ -85,6 +85,15 @@ type consoleIO struct {
 	DeviceBaseInfo
 }
 
+type memoryManagement struct {
+	DeviceBaseInfo
+	vm *VM
+	// These specify the min/max addresses for the heap when in
+	// a privilege mode other than 0 (highest)
+	minHeapAddr uint32
+	maxHeapAddr uint32
+}
+
 func newNoDevice() HardwareDevice {
 	return &nodevice{}
 }
@@ -127,6 +136,49 @@ func (t *systemTimer) TrySend(id InteractionID, command uint32, data []byte) Sta
 	return StatusDeviceReady
 }
 
+func newMemoryManagement(base DeviceBaseInfo, vm *VM) HardwareDevice {
+	return &memoryManagement{
+		DeviceBaseInfo: base,
+		vm:             vm,
+		minHeapAddr:    0,
+		maxHeapAddr:    uint32(len(vm.memory)),
+	}
+}
+
 func (t *systemTimer) Close() {
+
+}
+
+func (m *memoryManagement) GetInfo() HardwareDeviceInfo {
+	return HardwareDeviceInfo{
+		HWID: 0x01,
+	}
+}
+
+func (m *memoryManagement) updateBounds() {
+	if *m.vm.mode == 0 {
+		m.vm.activeSegment = m.vm.memory[:]
+		m.vm.stackOffsetBytes = 0
+	} else {
+		m.vm.activeSegment = m.vm.memory[m.minHeapAddr:m.maxHeapAddr]
+		m.vm.stackOffsetBytes = m.minHeapAddr
+	}
+}
+
+// Command of 1 -> get status
+// Command of 2 -> set new min/max heap addr bounds for non-privileged mode
+// Command of 3 -> update min/max heap addr based on privilege level
+func (m *memoryManagement) TrySend(id InteractionID, command uint32, data []byte) StatusCode {
+	if command == 1 {
+		return StatusDeviceReady
+	} else if command == 2 {
+		m.minHeapAddr, m.maxHeapAddr = uint32FromBytes(data), uint32FromBytes(data[varchBytes:])
+	}
+
+	m.updateBounds()
+	return StatusDeviceReady
+}
+
+func (m *memoryManagement) Close() {
 
 }
