@@ -1,7 +1,6 @@
 package gvm
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -316,14 +315,6 @@ func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
 		uint32ToBytes(uint32(r), data[:])
 		io.vm.responseBus.Send(NewResponse(io.InterruptAddr, iid, data[:], nil))
 		return true
-		// count, _ := io.vm.stdin.Read(data[:])
-		// if count > 0 {
-		// 	io.vm.responseBus.Send(NewResponse(io.InterruptAddr, iid, data[:], nil))
-		// 	return true
-		// }
-
-		// Request still needs processing
-		//return false
 	}
 
 	// Start up the reader function
@@ -334,8 +325,6 @@ func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
 				// IO device shut down
 				return
 			}
-
-			fmt.Println("Received char request")
 
 			data := [4]byte{}
 			for !processOneRequest(iid, data) {
@@ -369,7 +358,6 @@ func (c *consoleIO) TrySend(id InteractionID, command uint32, data []byte) Statu
 		}
 		c.vm.stdout.Flush()
 	} else if command == 4 {
-		fmt.Println("Attempting to read character")
 		if ok := c.charRequests.send(id); !ok {
 			c.vm.responseBus.Send(NewResponse(c.InterruptAddr, id, nil, errIO))
 			return StatusDeviceBusy

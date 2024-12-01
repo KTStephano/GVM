@@ -41,7 +41,7 @@
 // read 1 character from stdin (return value is in register[2])
 readc: 
     sysint 0xA0         // make a system call to get the next character (result is stored in register[2])
-    return              
+    return       
 
 // 0xA0
 __requestCharInput:
