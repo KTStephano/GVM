@@ -16,3 +16,4 @@ poweroff:
     const 0             // interation id unused
     write 1 3           // port: 1 (power management unit)
                         // cmd:  3 (perform poweroff)
+    halt                // just in case shutdown takes a bit

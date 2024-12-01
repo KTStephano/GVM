@@ -1,6 +1,7 @@
 package gvm
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -119,8 +120,16 @@ type nodevice struct {
 	DeviceBaseInfo
 }
 
+type systemTimerData struct {
+	duration time.Duration
+	iid      InteractionID
+}
+
 type systemTimer struct {
 	DeviceBaseInfo
+
+	timerChan chan systemTimerData
+	closed    atomic.Bool
 }
 
 type powerController struct {
@@ -168,9 +177,34 @@ func (*nodevice) Close() {}
 
 // ------- Begin system timer
 func newSystemTimer(base DeviceBaseInfo) HardwareDevice {
-	return &systemTimer{
+	st := &systemTimer{
 		DeviceBaseInfo: base,
+		timerChan:      make(chan systemTimerData, 1),
 	}
+
+	// Start the timer goroutine
+	go func() {
+		t := time.NewTimer(time.Duration(math.MaxInt64))
+		var iid InteractionID
+		for {
+			if st.closed.Load() {
+				// Timer system shut down
+				return
+			}
+
+			select {
+			case <-t.C:
+				// Use nil data in response since calling code will interpret our response
+				// to mean the timer expired
+				st.ResponseBus.Send(NewResponse(st.InterruptAddr, iid, nil, nil))
+			case newTimer := <-st.timerChan:
+				t = time.NewTimer(newTimer.duration)
+				iid = newTimer.iid
+			}
+		}
+	}()
+
+	return st
 }
 
 func (t *systemTimer) GetInfo() HardwareDeviceInfo {
@@ -184,23 +218,25 @@ func (t *systemTimer) TrySend(id InteractionID, command uint32, data []byte) Sta
 		return StatusDeviceReady
 	}
 
-	go func(nsec time.Duration) {
-		timer := time.NewTimer(nsec * time.Microsecond)
-		<-timer.C
-		// Use nil data in response since calling code will interpret our response
-		// to mean the timer expired
-		t.ResponseBus.Send(NewResponse(t.InterruptAddr, id, nil, nil))
-	}(time.Duration(uint32FromBytes(data)))
+	t.timerChan <- systemTimerData{
+		duration: time.Duration(uint32FromBytes(data)) * time.Microsecond,
+		iid:      id,
+	}
 
 	return StatusDeviceReady
 }
 
 func (t *systemTimer) Reset() {
-
+	// Send a new max timer to override the existing one
+	t.timerChan <- systemTimerData{
+		duration: time.Duration(math.MaxInt64),
+		iid:      0,
+	}
 }
 
 func (t *systemTimer) Close() {
-
+	t.closed.Store(true)
+	t.Reset()
 }
 
 // ------- Begin power controller
@@ -301,20 +337,36 @@ func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
 		charRequests:   newNonBlockingChan[InteractionID](32),
 	}
 
-	processOneRequest := func(iid InteractionID, data [4]byte) bool {
-		io.Lock()
-		defer io.Unlock()
+	isResetOrClosed := func(lock bool) bool {
+		if lock {
+			io.Lock()
+			defer io.Unlock()
+		}
 
-		if io.reset || io.closed {
-			// Clear the reset flag and return true (request is done)
-			io.reset = false
-			return true
+		r := io.reset
+		// Clear the reset flag
+		io.reset = false
+		return r || io.closed
+	}
+
+	processOneRequest := func(iid InteractionID, data [4]byte) {
+		if isResetOrClosed(true) {
+			return
 		}
 
 		r, _, _ := io.vm.stdin.ReadRune()
+
+		// Acquire the lock and then check again to see if we need to close
+		io.Lock()
+		defer io.Unlock()
+		if isResetOrClosed(false) {
+			io.vm.stdin.UnreadRune()
+			return
+		}
+
+		// Pack the rune into bytes and send a response over the CPU bus
 		uint32ToBytes(uint32(r), data[:])
 		io.vm.responseBus.Send(NewResponse(io.InterruptAddr, iid, data[:], nil))
-		return true
 	}
 
 	// Start up the reader function
@@ -327,8 +379,7 @@ func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
 			}
 
 			data := [4]byte{}
-			for !processOneRequest(iid, data) {
-			}
+			processOneRequest(iid, data)
 		}
 	}()
 
