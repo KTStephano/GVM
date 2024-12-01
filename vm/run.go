@@ -82,29 +82,8 @@ func (vm *VM) RunProgramDebugMode() {
 }
 
 func (vm *VM) RunProgram() {
-	// Get original value for GOGC, or set to 100 if not present
-	// key, ok := os.LookupEnv("GOGC")
-	// if !ok {
-	// 	key = "100"
-	// }
-
-	// gcPercent, err := strconv.ParseInt(key, 10, 32)
-	// if err != nil {
-	// 	gcPercent = 100
-	// }
-
-	// defer func() {
-	// 	// Restore GC
-	// 	debug.SetGCPercent(int(gcPercent))
-	// }()
-
-	// Disable the garbage collector while we're running (memory is allocated
-	// up front during compile/VM creation, but not during execution aside from stack)
-	//
-	// The reason is that in the tight loop of instruction execution, function calls
-	// and memory allocs are too expensive
-	// debug.SetGCPercent(-1)
-
+	// While execInstructions returns true, keep allowing it to execute
+	// (sometimes it temporarily returns when it is trying to recover from an error)
 	for vm.execInstructions(false) {
 	}
 
