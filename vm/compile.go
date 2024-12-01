@@ -379,8 +379,6 @@ func inputArgToUint32(strArg string) (uint32, error) {
 
 			return math.Float32bits(float32(arg)), nil
 		} else {
-			var arg int64
-			var err error
 			base := 10
 			// Check for hex values
 			if strings.HasPrefix(strArg, "0x") {
@@ -389,12 +387,23 @@ func inputArgToUint32(strArg string) (uint32, error) {
 				strArg = strings.Replace(strArg, "0x", "", 1)
 			}
 
-			arg, err = strconv.ParseInt(strArg, base, 32)
+			var arg uint32
+			var err error
+			if strings.HasPrefix(strArg, "-") {
+				r, e := strconv.ParseInt(strArg, base, 32)
+				arg = uint32(r)
+				err = e
+			} else {
+				r, e := strconv.ParseUint(strArg, base, 32)
+				arg = uint32(r)
+				err = e
+			}
+
 			if err != nil {
 				return math.MaxUint32, err
 			}
 
-			return uint32(arg), nil
+			return arg, nil
 		}
 	}
 }
@@ -443,34 +452,17 @@ func parseInputLine(line [3]string) (Instruction, error) {
 	}
 }
 
-// Takes a series of files and combines them into a program represented by a list of instructions
-// and a debug symbol map (if debug requested). The files are read sequentially so the first instruction
-// in the first file is what starts executing first.
-func CompileSource(debug bool, files ...string) (Program, error) {
+// Takes a buffer of lines and assembles them into a program represented by a list of instructions
+// and a debug symbol map (if debug requested).
+func CompileSourceFromBuffer(debug bool, lines []string) (Program, error) {
+	if len(lines) == 0 {
+		return Program{}, errors.New("no source lines given")
+	}
+
 	// If requested, set up the VM in debug mode
 	var debugSymMap map[int]string
 	if debug {
 		debugSymMap = make(map[int]string)
-	}
-
-	// Read each file
-	lines := make([]string, 0)
-	for _, filename := range files {
-		file, err := os.Open(filename)
-		if err != nil {
-			fmt.Println("Could not read", filename)
-			return Program{}, err
-		}
-
-		reader := bufio.NewReader(file)
-		for {
-			line, _, err := reader.ReadLine()
-			if err != nil {
-				break
-			}
-
-			lines = append(lines, string(line))
-		}
 	}
 
 	// Maps from regex(label) -> address string
@@ -527,6 +519,33 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 	}
 
 	return Program{instructions: instructions, debugSymMap: debugSymMap}, nil
+}
+
+// Takes a series of files and assembles them into a program represented by a list of instructions
+// and a debug symbol map (if debug requested). The files are read sequentially so the first instruction
+// in the first file is what starts executing first.
+func CompileSource(debug bool, files ...string) (Program, error) {
+	// Read each file
+	lines := make([]string, 0)
+	for _, filename := range files {
+		file, err := os.Open(filename)
+		if err != nil {
+			fmt.Println("Could not read", filename)
+			return Program{}, err
+		}
+
+		reader := bufio.NewReader(file)
+		for {
+			line, _, err := reader.ReadLine()
+			if err != nil {
+				break
+			}
+
+			lines = append(lines, string(line))
+		}
+	}
+
+	return CompileSourceFromBuffer(debug, lines)
 }
 
 // This is called when package is first loaded (before main)
