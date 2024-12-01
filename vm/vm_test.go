@@ -82,6 +82,64 @@ var (
 		pop 4               // get rid of write result
 		jmp loop
 	`
+
+	deviceCheck = `
+		const 0             // no input data
+		const 0             // unused interaction id
+		write 0 1           // port 0 = system timer, command 1 = status check
+		call ensureDevicePresent
+
+		const 0             // no input data
+		const 0             // unused interaction id
+		write 1 1           // port 1 = power controller, command 1 = status check
+		call ensureDevicePresent
+
+		const 0             // no input data
+		const 0             // unused interaction id
+		write 2 1           // port 2 = memory management, command 1 = status check
+		call ensureDevicePresent
+
+		const 0             // no input data
+		const 0             // unused interaction id
+		write 3 1           // port 3 = console IO, command 1 = status check
+		call ensureDevicePresent
+
+		// This should be the first device that's not available
+		const 0             // no input data
+		const 0             // unused interaction id
+		write 4 1           // port 3 = console IO, command 1 = status check
+		call ensureDeviceNotPresent
+
+        // Trigger shutdown
+        const 0             // no data required
+        const 0             // interation id unused
+        write 1 3           // port: 1 (power management unit)
+                            // cmd:  3 (perform poweroff)
+        halt                // just in case shutdown takes a bit
+
+	ensureDeviceNotPresent:
+		rload 1				// load stack pointer
+		addi 8				// skip past return addr and frame pointer
+		loadp32
+		const 0x00
+		cmpu				// compare unsigned status with 0x00
+		jnz __triggerError
+		return
+
+	ensureDevicePresent:
+		rload 1				// load stack pointer
+		addi 8				// skip past return addr and frame pointer
+		loadp32
+		const 0x01
+		cmpu				// compare unsigned status with 0x01
+		jnz __triggerError
+		return
+
+	__triggerError:
+		const 0
+		const 1
+		divi
+	`
 )
 
 func TestVM(t *testing.T) {
@@ -114,4 +172,7 @@ func TestVM(t *testing.T) {
 
 	vm = compileAndCheckSource(t, errIOTest)
 	runAndEnsureSpecificShutdown(t, vm, errIO)
+
+	vm = compileAndCheckSource(t, deviceCheck)
+	runAndEnsureSpecificShutdown(t, vm, errSystemShutdown)
 }
