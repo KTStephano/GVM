@@ -58,7 +58,7 @@ func (vm *VM) RunProgramDebugMode() {
 
 				return
 			}
-		} else if line == "program" {
+		} else if line == "p" || line == "program" {
 			vm.printProgram()
 		} else if line == "r" || line == "run" {
 			waitForInput = false

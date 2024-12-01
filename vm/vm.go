@@ -287,7 +287,12 @@ func (vm *VM) printDebugOutput() {
 func (vm *VM) printProgram() {
 	numInstructions := vm.processInstructionBytes / instructionBytes
 	for i := range numInstructions {
-		fmt.Println(formatInstructionStr(vm, register(i)*instructionBytes+reservedBytes, " "))
+		fmt.Print(formatInstructionStr(vm, register(i)*instructionBytes+reservedBytes, " "))
+		if (i*instructionBytes + reservedBytes) == *vm.pc {
+			fmt.Print(" <- next instruction\n")
+		} else {
+			fmt.Println()
+		}
 	}
 }
 
