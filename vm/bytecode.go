@@ -22,6 +22,53 @@ package gvm
 		- startup program starts at byte 256
 		- by default, entire memory segment is read/write at startup
 
+	Devices
+		- There are 16 device slots (indexed 0-15 when using write instruction)
+		- write instruction accepts a command:
+			-> 0 means "get device info"
+			-> 1 means "get device status"
+			-> 2+ are device specific
+		- port 0 (handler address 0x00) is system timer
+			-> command 2 is "set new timer"
+				-> expects 4 byte input representing microseconds
+		- port 1 (handler address 0x04) is power controller
+			-> command 2 is "perform restart"
+				-> expects no inputs
+			-> command 3 is "perform poweroff"
+				-> expects no inputs
+		- port 2 (handler address 0x08) is memory management unit
+			-> command 2 is "set new min/max heap addr bounds" (only applies to non-privileged code)
+				-> expects 8 byte input
+					-> first 4 bytes: min heap address
+					-> next 4 bytes: max heap address
+			-> command 3 is "update to previously set min/max based on privilege level"
+				-> expects no input
+				-> if CPU mode is 0 (max privilege), unlocks entire memory address range
+				-> if CPU mode is not 0 (non-privileged mode), resets to previous min/max heap addresses
+		- port 3 (handler address 0x0C) is console IO
+			-> command 2 is "write a single 32-bit character"
+				-> expects 4 byte input
+			-> command 3 is "write N bytes from address"
+				-> expects 8 byte input
+					-> first 4 bytes: number of bytes to write
+					-> next 4 bytes: address to start reading bytes from
+			-> command 4 is "read 32-bit character"
+				-> expects no input
+				-> when data comes in, it is forwarded to handler address 0x0C
+		- ports 4-15 are currently unused
+
+	Exceptions
+		- There are 5 exceptions that can be caught and handled by the code
+		- segmentation fault (handler address 0x40)
+		- division by zero (handler address 0x44)
+		- unknown instruction (handler address 0x48)
+		- illegal instruction (handler address 0x76)
+		- IO error (handler address 0x50)
+		- [0x54, 0xA0) are currently unused
+
+	Public interrupts
+		- Address range [0xA0, 0x100) can be called from public code and are unspecified what they are for
+
 	This bytecode instruction set attempts to strike a balance between the extreme simplicity
 	of a stack-based design and the increased complexity but better performance (at least for interpreter VMs) of
 	a register-based design. Almost all instructions revolve around the stack, but there are some additions
@@ -314,6 +361,10 @@ func (b Bytecode) String() string {
 // True if the bytecode deals with register load/store/arithmetic/logic
 func (b Bytecode) IsRegisterOp() bool {
 	return b == Rload || b.IsRegisterWriteOp()
+}
+
+func (b Bytecode) IsPrivilegedRegisterOp() bool {
+	return b == Srload || b == Srstore
 }
 
 // Returns true for all instructions that write to a register

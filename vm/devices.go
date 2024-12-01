@@ -1,6 +1,8 @@
 package gvm
 
 import (
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -11,6 +13,13 @@ const (
 	StatusDeviceReady    StatusCode = 0x01
 	StatusDeviceBusy     StatusCode = 0x02
 )
+
+// Only safe with 1 sender, but many receivers are allowed
+type nonBlockingChan[T any] struct {
+	channel  chan T
+	count    atomic.Int32
+	capacity int32
+}
 
 type Request struct {
 	// This should either be 0 (no ID) or a unique number that represents the
@@ -63,6 +72,38 @@ type DeviceBaseInfo struct {
 	ResponseBus   *deviceResponseBus
 }
 
+func newNonBlockingChan[T any](capacity int32) *nonBlockingChan[T] {
+	return &nonBlockingChan[T]{
+		channel:  make(chan T, capacity),
+		capacity: capacity,
+	}
+}
+
+func (nc *nonBlockingChan[T]) send(data T) bool {
+	newCount := nc.count.Add(1)
+	if newCount > nc.capacity {
+		nc.count.Add(-1)
+		return false
+	}
+
+	nc.channel <- data
+	return true
+}
+
+func (nc *nonBlockingChan[T]) receive() (T, bool) {
+	v, ok := <-nc.channel
+	if ok {
+		nc.count.Add(-1)
+	}
+
+	return v, ok
+}
+
+func (nc *nonBlockingChan[T]) close() {
+	nc.count.Store(nc.capacity + 1)
+	close(nc.channel)
+}
+
 // deviceIndex can usually be 0 unless trying to multiplex one port to multiple devices
 func NewResponse(interruptAddr uint32, id InteractionID, data []byte, err error) *Response {
 	return &Response{
@@ -88,7 +129,15 @@ type powerController struct {
 }
 
 type consoleIO struct {
+	sync.Mutex
+
 	DeviceBaseInfo
+
+	vm           *VM
+	charRequests *nonBlockingChan[InteractionID]
+
+	reset  bool
+	closed bool
 }
 
 type memoryManagement struct {
@@ -243,3 +292,96 @@ func (m *memoryManagement) Reset() {
 }
 
 func (m *memoryManagement) Close() {}
+
+// ------- Begin console IO manager
+func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
+	io := &consoleIO{
+		DeviceBaseInfo: base,
+		vm:             vm,
+		charRequests:   newNonBlockingChan[InteractionID](32),
+	}
+
+	processOneRequest := func(iid InteractionID, data [4]byte) bool {
+		io.Lock()
+		defer io.Unlock()
+
+		if io.reset || io.closed {
+			// Clear the reset flag and return true (request is done)
+			io.reset = false
+			return true
+		}
+
+		count, _ := io.vm.stdin.Read(data[:])
+		if count > 0 {
+			io.vm.responseBus.Send(NewResponse(io.InterruptAddr, iid, data[:], nil))
+			return true
+		}
+
+		// Request still needs processing
+		return false
+	}
+
+	// Start up the reader function
+	go func() {
+		for {
+			iid, ok := io.charRequests.receive()
+			if !ok {
+				// IO device shut down
+				return
+			}
+
+			data := [4]byte{}
+			for processOneRequest(iid, data) {
+			}
+		}
+	}()
+
+	return io
+}
+
+func (*consoleIO) GetInfo() HardwareDeviceInfo {
+	return HardwareDeviceInfo{
+		HWID: 0x04,
+	}
+}
+
+// Command of 1 -> get status
+// Command of 2 -> write 32-bit character
+// Command of 3 -> write n bytes from address
+// Command of 4 -> read 32-bit character
+func (c *consoleIO) TrySend(id InteractionID, command uint32, data []byte) StatusCode {
+	if command == 2 {
+		c.vm.stdout.WriteRune(rune(uint32FromBytes(data)))
+		c.vm.stdout.Flush()
+	} else if command == 3 {
+		numBytes := uint32FromBytes(data)
+		addr := uint32FromBytes(data[varchBytes:])
+		for i := uint32(0); i < numBytes; i++ {
+			b := c.vm.memory[addr+i]
+			c.vm.stdout.WriteByte(b)
+			if b == '\r' || b == '\n' {
+				c.vm.stdout.Flush()
+			}
+		}
+	} else if command == 4 {
+		if ok := c.charRequests.send(id); !ok {
+			c.vm.responseBus.Send(NewResponse(c.InterruptAddr, id, nil, errIO))
+			return StatusDeviceBusy
+		}
+	}
+
+	return StatusDeviceReady
+}
+
+func (c *consoleIO) Reset() {
+	c.Lock()
+	defer c.Unlock()
+	c.reset = true
+}
+
+func (c *consoleIO) Close() {
+	c.charRequests.close()
+	c.Lock()
+	defer c.Unlock()
+	c.closed = true
+}

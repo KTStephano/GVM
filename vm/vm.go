@@ -177,6 +177,7 @@ func NewVirtualMachine(program Program) *VM {
 	vm.devices[0] = newSystemTimer(DeviceBaseInfo{InterruptAddr: 0, ResponseBus: vm.responseBus})
 	vm.devices[1] = newPowerController(DeviceBaseInfo{InterruptAddr: 1 * varchBytes, ResponseBus: vm.responseBus}, vm)
 	vm.devices[2] = newMemoryManagement(DeviceBaseInfo{InterruptAddr: 2 * varchBytes, ResponseBus: vm.responseBus}, vm)
+	vm.devices[3] = newConsoleIO(DeviceBaseInfo{InterruptAddr: 3 * varchBytes, ResponseBus: vm.responseBus}, vm)
 
 	// Initialize remainder of device slots with nodevice marker
 	for i := 0; i < int(maxHWDevices); i++ {
@@ -407,12 +408,17 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 
 func (vm *VM) initForInterrupt() {
 	// Store state related to current frame to allow for later resume
-	vm.pushStack(*vm.pc)
-	vm.pushStack(*vm.sp)
 	vm.pushStack(*vm.mode)
+	vm.pushStack(*vm.sp)
+	vm.pushStack(*vm.pc)
 
-	// Clear the mode flag to signal max privilege
-	*vm.mode = 0
+	if *vm.mode != 0 {
+		// Clear the mode flag to signal max privilege
+		*vm.mode = 0
+
+		// Allow memory management device to potentially update memory bounds
+		vm.devices[2].TrySend(0, 3, nil)
+	}
 }
 
 // Instruction fetch, decode+execute
@@ -544,12 +550,20 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 		case popNoArgs:
 			bytes := vm.popStackUint32()
 			vm.popStackFast(bytes)
-			// This will ensure we catch invalid stack addresses
-			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
+
+			relative := vm.computeRelativeStackPointer(*vm.sp)
+			if relative > uint32(len(vm.activeSegment)) {
+				// This will ensure we catch invalid stack addresses
+				var _ = vm.activeSegment[relative]
+			}
 		case popOneArg:
 			vm.popStackFast(oparg)
-			// This will ensure we catch invalid stack addresses
-			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
+
+			relative := vm.computeRelativeStackPointer(*vm.sp)
+			if relative > uint32(len(vm.activeSegment)) {
+				// This will ensure we catch invalid stack addresses
+				var _ = vm.activeSegment[relative]
+			}
 
 		// Begin add instructions
 		case addiNoArgs:
@@ -890,23 +904,7 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 			vm.pushStack(*pc)
 			*pc = oparg
 
-		// Begin console IO instructions
-		// case writebNoArgs:
-		// 	addr := vm.computeRelativeStackPointer(vm.popStackUint32())
-		// 	vm.stdout.WriteByte(vm.activeSegment[addr])
-		// case writecNoArgs:
-		// 	character := rune(vm.popStackUint32())
-		// 	vm.stdout.WriteRune(character)
-		// case flushNoArgs:
-		// 	vm.stdout.Flush()
-		// case readcNoArgs:
-		// 	character, _, err := vm.stdin.ReadRune()
-		// 	if err != nil {
-		// 		vm.errcode = errIO
-		// 		return
-		// 	}
-		// 	vm.pushStack(uint32(character))
-
+		// Begin special register load/store
 		case srLoadOneArg:
 			// privilege check
 			if *vm.mode != 0 {
@@ -929,6 +927,7 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 			// register was vm.mode)
 			vm.devices[2].TrySend(0, 3, nil)
 
+		// Begin system interrupt and resume
 		case sysintOneArg:
 			if oparg < restrictedInterruptsAddrRange {
 				// Perform privilege check to make sure calling code can actually initiate a
@@ -958,7 +957,7 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 				continue
 			}
 
-			prevMode, prevSp, prevPc := vm.popStackx3Uint32()
+			prevPc, prevSp, prevMode := vm.popStackx3Uint32()
 			// Since resume is a privileged instruction, we know the current mode must be 0
 			// If prevMode is anything other than 0 (unprivileged), update the mode and notify memory manager
 			if prevMode != 0 {
@@ -969,6 +968,8 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 
 			*vm.sp = prevSp
 			*vm.pc = prevPc
+
+			// Check if the next instruction is halt (meaning we resumed into a halt)
 
 		case writeTwoArgs:
 			// privilege check

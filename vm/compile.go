@@ -429,7 +429,7 @@ func parseInputLine(line [3]string) (Instruction, error) {
 		return Instruction{}, fmt.Errorf("%s can only support a max of %d args but got %d", code, maxArgs, numArgs)
 	}
 
-	if code.IsRegisterOp() {
+	if code.IsRegisterOp() || code.IsPrivilegedRegisterOp() {
 		// Register instructions accept a minimum of 1 16-bit argument, but some also have an optional
 		// 2nd 32-bit argument
 		return NewInstruction(byte(numArgs), code, uint16(args[0]), args[1]), nil
