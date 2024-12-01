@@ -110,12 +110,12 @@ var (
 		write 4 1           // port 3 = console IO, command 1 = status check
 		call ensureDeviceNotPresent
 
-        // Trigger shutdown
-        const 0             // no data required
-        const 0             // interation id unused
-        write 1 3           // port: 1 (power management unit)
-                            // cmd:  3 (perform poweroff)
-        halt                // just in case shutdown takes a bit
+		// Trigger shutdown
+		const 0             // no data required
+		const 0             // interation id unused
+		write 1 3           // port: 1 (power management unit)
+							// cmd:  3 (perform poweroff)
+		halt                // just in case shutdown takes a bit
 
 	ensureDeviceNotPresent:
 		rload 1				// load stack pointer
@@ -146,10 +146,10 @@ var (
 		loadp32			   // memory address read from 0x00 should work
 
 		// Trigger shutdown
-        const 0             // no data required
-        const 0             // interation id unused
-        write 1 3           // port: 1 (power management unit)
-                            // cmd:  3 (perform poweroff)
+		const 0             // no data required
+		const 0             // interation id unused
+		write 1 3           // port: 1 (power management unit)
+							// cmd:  3 (perform poweroff)
 	`
 
 	memoryAddressSanityCheck2 = `
