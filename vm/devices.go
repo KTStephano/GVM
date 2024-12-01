@@ -17,13 +17,6 @@ const (
 	StatusDeviceBusy     StatusCode = 0x02
 )
 
-// Only safe with 1 sender, but many receivers are allowed
-type nonBlockingChan[T any] struct {
-	channel  chan T
-	count    atomic.Int32
-	capacity int32
-}
-
 type Request struct {
 	// This should either be 0 (no ID) or a unique number that represents the
 	// send-receive interaction so that the software knows what this is in response to
@@ -75,36 +68,79 @@ type DeviceBaseInfo struct {
 	ResponseBus   *deviceResponseBus
 }
 
-func newNonBlockingChan[T any](capacity int32) *nonBlockingChan[T] {
-	return &nonBlockingChan[T]{
-		channel:  make(chan T, capacity),
-		capacity: capacity,
-	}
+// Safe to be used by multiple threads
+type syncStack[T any] struct {
+	sync.Mutex
+
+	cv *sync.Cond
+
+	queue []T
+	count int
 }
 
-func (nc *nonBlockingChan[T]) send(data T) bool {
-	newCount := nc.count.Add(1)
-	if newCount > nc.capacity {
-		nc.count.Add(-1)
+func newSyncStack[T any](capacity int) *syncStack[T] {
+	stack := &syncStack[T]{
+		queue: make([]T, capacity),
+	}
+
+	stack.cv = sync.NewCond(stack)
+	return stack
+}
+
+func (q *syncStack[T]) push(data T) bool {
+	// Notify one waiting that data is available
+	defer q.unblockOne()
+
+	q.Lock()
+	defer q.Unlock()
+	if q.count >= len(q.queue) {
 		return false
 	}
 
-	nc.channel <- data
+	q.queue[q.count] = data
+	q.count++
 	return true
 }
 
-func (nc *nonBlockingChan[T]) receive() (T, bool) {
-	v, ok := <-nc.channel
-	if ok {
-		nc.count.Add(-1)
+func (q *syncStack[T]) pop() (T, bool) {
+	q.Lock()
+	defer q.Unlock()
+	if q.count == 0 {
+		var none T
+		return none, false
 	}
 
-	return v, ok
+	q.count--
+	return q.queue[q.count], true
 }
 
-func (nc *nonBlockingChan[T]) close() {
-	nc.count.Store(nc.capacity + 1)
-	close(nc.channel)
+func (q *syncStack[T]) popAll() []T {
+	q.Lock()
+	defer q.Unlock()
+
+	if q.count == 0 {
+		return nil
+	}
+
+	data := make([]T, q.count)
+	copy(data, q.queue)
+	q.count = 0
+	return data
+}
+
+// Waits for data to be available if it isn't already
+func (q *syncStack[T]) wait() {
+	q.Lock()
+	defer q.Unlock()
+
+	if q.count == 0 {
+		q.cv.Wait()
+	}
+}
+
+// Unblocks a reader (such as if they need to check other state)
+func (q *syncStack[T]) unblockOne() {
+	q.cv.Signal()
 }
 
 // deviceIndex can usually be 0 unless trying to multiplex one port to multiple devices
@@ -314,16 +350,13 @@ func (m *memoryManagement) Close() {}
 
 // ------- Begin console IO manager
 type consoleIO struct {
-	sync.Mutex
-
 	DeviceBaseInfo
 
 	vm           *VM
 	stdin        *bufio.Reader
-	charRequests *nonBlockingChan[InteractionID]
+	charRequests *syncStack[InteractionID]
 
-	reset  bool
-	closed bool
+	closed atomic.Bool
 }
 
 func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
@@ -331,53 +364,45 @@ func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
 		DeviceBaseInfo: base,
 		vm:             vm,
 		stdin:          bufio.NewReader(os.Stdin),
-		charRequests:   newNonBlockingChan[InteractionID](32),
+		charRequests:   newSyncStack[InteractionID](32),
 	}
 
-	isResetOrClosed := func(lock bool) bool {
-		if lock {
-			io.Lock()
-			defer io.Unlock()
-		}
-
-		r := io.reset
-		// Clear the reset flag
-		io.reset = false
-		return r || io.closed
-	}
-
-	processOneRequest := func(iid InteractionID) {
-		if isResetOrClosed(true) {
-			return
-		}
-
-		// This should be the only routine that accesses stdin in the whole codebase
-		r, _, _ := io.stdin.ReadRune()
-
-		// Acquire the lock and then check again to see if we need to close
-		io.Lock()
-		defer io.Unlock()
-		if isResetOrClosed(false) {
-			io.stdin.UnreadRune()
-			return
-		}
-
-		// Pack the rune into bytes and send a response over the CPU bus
-		data := [4]byte{}
-		uint32ToBytes(uint32(r), data[:])
-		io.ResponseBus.Send(NewResponse(io.InterruptAddr, iid, data[:], nil))
-	}
-
-	// Start up the reader function
+	// Start up the reader goroutine
 	go func() {
 		for {
-			iid, ok := io.charRequests.receive()
-			if !ok {
-				// IO device shut down
+			io.charRequests.wait()
+
+			if io.closed.Load() {
+				// console IO device has shut down
 				return
 			}
 
-			processOneRequest(iid)
+			// This should be the only routine that accesses stdin in the whole codebase
+			r, _, _ := io.stdin.ReadRune()
+
+			// Check if IO device closed while we were asleep waiting for input
+			if io.closed.Load() {
+				io.stdin.UnreadRune()
+				return
+			}
+
+			iids := io.charRequests.popAll()
+			if len(iids) == 0 {
+				// No pending requests
+				io.stdin.UnreadRune()
+				continue
+			}
+
+			// It's possible the device closed before it was able to clear the queue,
+			// and in that case there will be a last (likely unused) response
+
+			// Pack the rune into bytes and send a response over the CPU bus to anyone that
+			// requested a char read
+			data := [4]byte{}
+			uint32ToBytes(uint32(r), data[:])
+			for _, iid := range iids {
+				io.ResponseBus.Send(NewResponse(io.InterruptAddr, iid, data[:], nil))
+			}
 		}
 	}()
 
@@ -407,7 +432,7 @@ func (c *consoleIO) TrySend(id InteractionID, command uint32, data []byte) Statu
 		}
 		c.vm.stdout.Flush()
 	} else if command == 4 {
-		if ok := c.charRequests.send(id); !ok {
+		if ok := c.charRequests.push(id); !ok {
 			c.ResponseBus.Send(NewResponse(c.InterruptAddr, id, nil, errIO))
 			return StatusDeviceBusy
 		}
@@ -417,14 +442,16 @@ func (c *consoleIO) TrySend(id InteractionID, command uint32, data []byte) Statu
 }
 
 func (c *consoleIO) Reset() {
-	c.Lock()
-	defer c.Unlock()
-	c.reset = true
+	// Clear pending requests
+	c.charRequests.popAll()
 }
 
 func (c *consoleIO) Close() {
-	c.charRequests.close()
-	c.Lock()
-	defer c.Unlock()
-	c.closed = true
+	// Mark closed and reset internal state
+	c.closed.Store(true)
+	c.Reset()
+
+	// If reader thread is stuck waiting on data, unblock it so that it can see
+	// that the closed flag is set
+	c.charRequests.unblockOne()
 }
