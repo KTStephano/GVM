@@ -8,30 +8,7 @@ import (
 	"strings"
 )
 
-func getDefaultRecoverFuncForVM(vm *VM) func() {
-	// Allows us to handle critical errors that came up during execuion
-	return func() {
-		if r := recover(); r != nil {
-			err := errSegmentationFault
-			pc := *vm.pc
-
-			// Back up to instruction that failed
-			if pc > 0 {
-				pc -= instructionBytes
-			}
-
-			if vm.errcode != nil {
-				err = vm.errcode
-			}
-
-			fmt.Printf("%s%s\n", err, formatInstructionStr(vm, pc, " at instruction:"))
-		}
-	}
-}
-
 func (vm *VM) RunProgramDebugMode() {
-	defer getDefaultRecoverFuncForVM(vm)()
-
 	fmt.Printf("Commands:\n\tn or next: execute next instruction\n\tr or run: run program\n\tb or break <line>: break on line (or remove break on line)\n\n")
 
 	vm.printCurrentState()
@@ -63,14 +40,16 @@ func (vm *VM) RunProgramDebugMode() {
 			// Reset break flag
 			lastBreakLine = -1
 
-			vm.execInstructions(true)
+			result := vm.execInstructions(true)
 			if waitForInput {
 				// Only print state after each instruction if we're also waiting for input
 				// after each instruction
 				vm.printCurrentState()
 			}
 
-			if vm.errcode != nil {
+			if result {
+				continue
+			} else if vm.errcode != nil {
 				vm.printDebugOutput()
 				if vm.errcode != errSystemShutdown {
 					// pc-instructionBytes should be the instruction that failed
@@ -114,7 +93,6 @@ func (vm *VM) RunProgram() {
 	// 	gcPercent = 100
 	// }
 
-	defer getDefaultRecoverFuncForVM(vm)()
 	// defer func() {
 	// 	// Restore GC
 	// 	debug.SetGCPercent(int(gcPercent))
@@ -127,10 +105,13 @@ func (vm *VM) RunProgram() {
 	// and memory allocs are too expensive
 	// debug.SetGCPercent(-1)
 
-	vm.execInstructions(false)
+	for vm.execInstructions(false) {
+	}
+
 	if err := vm.errcode; err != nil {
 		if err != errSystemShutdown {
-			fmt.Println(err)
+			// pc-instructionBytes should be the instruction that failed
+			fmt.Println(formatInstructionStr(vm, *vm.pc-instructionBytes, vm.errcode.Error()))
 		}
 	}
 }

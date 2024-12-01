@@ -211,6 +211,7 @@ const (
 	Cmpu Bytecode = 0x47
 	Cmps Bytecode = 0x48
 	Cmpf Bytecode = 0x49
+	Call Bytecode = 0x4A
 
 	Raddi   Bytecode = 0x60
 	Raddf   Bytecode = 0x61
@@ -278,6 +279,7 @@ var (
 		"cmpu":     Cmpu,
 		"cmps":     Cmps,
 		"cmpf":     Cmpf,
+		"call":     Call,
 		"raddi":    Raddi,
 		"raddf":    Raddf,
 		"rsubi":    Rsubi,
@@ -349,6 +351,7 @@ func (b Bytecode) NumOptionalOpArgs() int {
 		b == Shiftl || b == Shiftr ||
 		b == Push || b == Pop ||
 		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg ||
+		b == Call ||
 		b.IsRegisterReadWriteOp() {
 		return 1
 	} else {

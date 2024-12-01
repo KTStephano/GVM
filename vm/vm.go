@@ -95,7 +95,9 @@ const (
 	// These are the memory address ranges that the interrupts occupy
 	// [0, interruptsAddrRange) -> includes privileged and unprivileged
 	interruptsAddrRange uint32 = reservedBytes
-	// [0, restrictedInterruptsAddrRange)
+	// [0, hwInterruptAddrRange)
+	hwInterruptAddrRange uint32 = maxHWDevices * varchBytes
+	// [0, restrictedInterruptsAddrRange) -> includes the hardware interrupts
 	restrictedInterruptsAddrRange uint32 = maxRestrictedInterrupts * varchBytes
 	// Lower addresses are occupied by the restricted interrupts
 	// [restrictedInterruptsAddrRange, publicInterruptsAddrRange)
@@ -107,8 +109,17 @@ var (
 	errSegmentationFault  = errors.New("segmentation fault")
 	errDivisionByZero     = errors.New("division by zero")
 	errUnknownInstruction = errors.New("instruction not recognized")
-	errIllegelInstruction = errors.New("illegal instruction (privilege too low)")
+	errIllegalInstruction = errors.New("illegal instruction (privilege too low)")
 	errIO                 = errors.New("input-output error")
+
+	// Maps from error code -> exception (interrupt) handler address
+	hardwareExceptionMap = map[error]uint32{
+		errSegmentationFault:  hwInterruptAddrRange + 0*varchBytes,
+		errDivisionByZero:     hwInterruptAddrRange + 1*varchBytes,
+		errUnknownInstruction: hwInterruptAddrRange + 2*varchBytes,
+		errIllegalInstruction: hwInterruptAddrRange + 3*varchBytes,
+		errIO:                 hwInterruptAddrRange + 4*varchBytes,
+	}
 )
 
 // Push the number of reserved bytes and the length of the process instruction bytes
@@ -394,6 +405,16 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 	return uint32(x % y), nil
 }
 
+func (vm *VM) initForInterrupt() {
+	// Store state related to current frame to allow for later resume
+	vm.pushStack(*vm.pc)
+	vm.pushStack(*vm.sp)
+	vm.pushStack(*vm.mode)
+
+	// Clear the mode flag to signal max privilege
+	*vm.mode = 0
+}
+
 // Instruction fetch, decode+execute
 //
 // This is considered a tight loop. Some of the normal programming conveniences and patterns
@@ -407,30 +428,48 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 // and then returns to caller.
 //
 // The current design of this function attempts to balance performance, readability and code reuse.
-func (vm *VM) execInstructions(singleStep bool) {
-	for {
-		// Possible this was set to non-nil during poweroff
-		if vm.errcode != nil {
-			return
+func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			vm.errcode = errSegmentationFault
+			// Signal to caller that we want to retry execution
+			retcode = true
 		}
+	}()
 
+	for {
 		pc := vm.pc
-		// if *pc >= heapSizeBytes {
-		// 	vm.errcode = errProcessFinished
-		// 	return
-		// }
 
-		if vm.responseBus.Ready() {
+		// Possible this was set to non-nil during a device interaction
+		if vm.errcode != nil {
+			handlerAddr, ok := hardwareExceptionMap[vm.errcode]
+			// Possible that this exception is not one of the ones we are allowed to recover from
+			if !ok {
+				return false
+			}
+
+			handlerAddr = uint32FromBytes(vm.memory[handlerAddr:])
+			// Possible there has not been a handler configured for this exception
+			if handlerAddr == 0 {
+				return false
+			}
+
+			vm.initForInterrupt()
+			*pc = handlerAddr
+
+			// Reset the error flag
+			vm.errcode = nil
+		} else if vm.responseBus.Ready() {
 			resp := vm.responseBus.Receive()
+			if resp.deviceErr != nil {
+				vm.errcode = resp.deviceErr
+				continue
+			}
+
 			handlerAddr := uint32FromBytes(vm.memory[resp.interruptAddr:])
-
 			if handlerAddr != 0 {
-				sp := *vm.sp
-
 				// Store state related to current frame first
-				vm.pushStack(*pc)
-				vm.pushStack(sp)
-				vm.pushStack(*vm.mode)
+				vm.initForInterrupt()
 
 				// Store response information next
 				vm.pushStackSegment(resp.data)
@@ -562,7 +601,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// and its discussion
 			if y == 0 {
 				vm.errcode = errDivisionByZero
-				return
+				continue
 			}
 
 			uint32ToBytes(x/y, bytes)
@@ -572,7 +611,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// and its discussion
 			if oparg == 0 {
 				vm.errcode = errDivisionByZero
-				return
+				continue
 			}
 
 			x, bytes := getStackOneInput(vm)
@@ -640,7 +679,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// and its discussion
 			if x == 0 {
 				vm.errcode = errDivisionByZero
-				return
+				continue
 			}
 
 			vm.pubRegisters[opreg] /= x
@@ -651,7 +690,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// and its discussion
 			if oparg == 0 {
 				vm.errcode = errDivisionByZero
-				return
+				continue
 			}
 
 			vm.pubRegisters[opreg] /= oparg
@@ -841,6 +880,16 @@ func (vm *VM) execInstructions(singleStep bool) {
 			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(compare(math.Float32frombits(x), math.Float32frombits(y)), bytes)
 
+		// Begin call functions
+		case callNoArgs:
+			bytes := vm.peekStack()
+			addr := uint32FromBytes(bytes)
+			uint32ToBytes(*pc, bytes)
+			*pc = addr
+		case callOneArg:
+			vm.pushStack(*pc)
+			*pc = oparg
+
 		// Begin console IO instructions
 		// case writebNoArgs:
 		// 	addr := vm.computeRelativeStackPointer(vm.popStackUint32())
@@ -861,16 +910,16 @@ func (vm *VM) execInstructions(singleStep bool) {
 		case srLoadOneArg:
 			// privilege check
 			if *vm.mode != 0 {
-				vm.errcode = errIllegelInstruction
-				return
+				vm.errcode = errIllegalInstruction
+				continue
 			}
 
 			vm.pushStack(vm.registers[opreg])
 		case srStoreOneArg:
 			// privilege check
 			if *vm.mode != 0 {
-				vm.errcode = errIllegelInstruction
-				return
+				vm.errcode = errIllegalInstruction
+				continue
 			}
 
 			regVal := uint32FromBytes(vm.popStack())
@@ -885,24 +934,28 @@ func (vm *VM) execInstructions(singleStep bool) {
 				// Perform privilege check to make sure calling code can actually initiate a
 				// privileged interrupt
 				if *vm.mode != 0 {
-					vm.errcode = errIllegelInstruction
-					return
+					vm.errcode = errIllegalInstruction
+					continue
 				}
 			}
 
+			handlerAddr := uint32FromBytes(vm.memory[oparg:])
+			if handlerAddr == 0 {
+				vm.errcode = errUnknownInstruction
+				continue
+			}
+
 			// Push caller frame info to the stack so we can resume later
-			vm.pushStack(*pc)
-			vm.pushStack(*vm.sp)
-			vm.pushStack(*vm.mode)
+			vm.initForInterrupt()
 
 			// Update the program counter to be the interrupt handler's address
-			*pc = uint32FromBytes(vm.memory[oparg:])
+			*pc = handlerAddr
 
 		case resumeNoArgs:
 			// privilege check
 			if *vm.mode != 0 {
-				vm.errcode = errIllegelInstruction
-				return
+				vm.errcode = errIllegalInstruction
+				continue
 			}
 
 			prevMode, prevSp, prevPc := vm.popStackx3Uint32()
@@ -920,8 +973,8 @@ func (vm *VM) execInstructions(singleStep bool) {
 		case writeTwoArgs:
 			// privilege check
 			if *vm.mode != 0 {
-				vm.errcode = errIllegelInstruction
-				return
+				vm.errcode = errIllegalInstruction
+				continue
 			}
 
 			if oparg == 0 {
@@ -941,8 +994,8 @@ func (vm *VM) execInstructions(singleStep bool) {
 		case haltNoArgs:
 			// privilege check
 			if *vm.mode != 0 {
-				vm.errcode = errIllegelInstruction
-				return
+				vm.errcode = errIllegalInstruction
+				continue
 			}
 
 			// Sets the pc to be this instruction (continues loop until interrupt)
@@ -952,11 +1005,11 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// Shouldn't get here since we preprocess+parse all source into
 			// valid instructions before executing
 			vm.errcode = errUnknownInstruction
-			return
+			continue
 		}
 
 		if singleStep {
-			return
+			return true
 		}
 	}
 }

@@ -31,6 +31,8 @@ type Response struct {
 	// send-receive interaction so that the software knows what this is in response to
 	id   InteractionID
 	data []byte
+	// If not nil then it signals to the CPU that something went wrong
+	deviceErr error
 }
 
 type HardwareDeviceInfo struct {
@@ -62,11 +64,12 @@ type DeviceBaseInfo struct {
 }
 
 // deviceIndex can usually be 0 unless trying to multiplex one port to multiple devices
-func NewResponse(interruptAddr uint32, id InteractionID, data []byte) *Response {
+func NewResponse(interruptAddr uint32, id InteractionID, data []byte, err error) *Response {
 	return &Response{
 		interruptAddr: interruptAddr,
 		id:            id,
 		data:          data,
+		deviceErr:     err,
 	}
 }
 
@@ -137,7 +140,7 @@ func (t *systemTimer) TrySend(id InteractionID, command uint32, data []byte) Sta
 		<-timer.C
 		// Use nil data in response since calling code will interpret our response
 		// to mean the timer expired
-		t.ResponseBus.Send(NewResponse(t.InterruptAddr, id, nil))
+		t.ResponseBus.Send(NewResponse(t.InterruptAddr, id, nil, nil))
 	}(time.Duration(uint32FromBytes(data)))
 
 	return StatusDeviceReady

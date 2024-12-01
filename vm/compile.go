@@ -112,6 +112,9 @@ const (
 	cmpsNoArgs uint16 = uint16(Cmps)
 	cmpfNoArgs uint16 = uint16(Cmpf)
 
+	callNoArgs uint16 = uint16(Call)
+	callOneArg uint16 = 0x0100 | uint16(Call)
+
 	// writebNoArgs uint16 = uint16(Writeb)
 	// writecNoArgs uint16 = uint16(Writec)
 	// flushNoArgs  uint16 = uint16(Flush)
