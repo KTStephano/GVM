@@ -1,7 +1,9 @@
 package gvm
 
 import (
+	"bufio"
 	"math"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -115,50 +117,11 @@ func NewResponse(interruptAddr uint32, id InteractionID, data []byte, err error)
 	}
 }
 
-// Begin builtin devices code
+// ------- Begin no device marker
 type nodevice struct {
 	DeviceBaseInfo
 }
 
-type systemTimerData struct {
-	duration time.Duration
-	iid      InteractionID
-}
-
-type systemTimer struct {
-	DeviceBaseInfo
-
-	timerChan chan systemTimerData
-	closed    atomic.Bool
-}
-
-type powerController struct {
-	DeviceBaseInfo
-	vm *VM
-}
-
-type consoleIO struct {
-	sync.Mutex
-
-	DeviceBaseInfo
-
-	vm           *VM
-	charRequests *nonBlockingChan[InteractionID]
-
-	reset  bool
-	closed bool
-}
-
-type memoryManagement struct {
-	DeviceBaseInfo
-	vm *VM
-	// These specify the min/max addresses for the heap when in
-	// a privilege mode other than 0 (highest)
-	minHeapAddr uint32
-	maxHeapAddr uint32
-}
-
-// ------- Begin no device marker
 func newNoDevice() HardwareDevice {
 	return &nodevice{}
 }
@@ -176,6 +139,18 @@ func (*nodevice) Reset() {}
 func (*nodevice) Close() {}
 
 // ------- Begin system timer
+type systemTimerData struct {
+	duration time.Duration
+	iid      InteractionID
+}
+
+type systemTimer struct {
+	DeviceBaseInfo
+
+	timerChan chan systemTimerData
+	closed    atomic.Bool
+}
+
 func newSystemTimer(base DeviceBaseInfo) HardwareDevice {
 	st := &systemTimer{
 		DeviceBaseInfo: base,
@@ -198,6 +173,7 @@ func newSystemTimer(base DeviceBaseInfo) HardwareDevice {
 				// to mean the timer expired
 				st.ResponseBus.Send(NewResponse(st.InterruptAddr, iid, nil, nil))
 			case newTimer := <-st.timerChan:
+				// New timer received - overwrite existing
 				t = time.NewTimer(newTimer.duration)
 				iid = newTimer.iid
 			}
@@ -240,6 +216,11 @@ func (t *systemTimer) Close() {
 }
 
 // ------- Begin power controller
+type powerController struct {
+	DeviceBaseInfo
+	vm *VM
+}
+
 func newPowerController(base DeviceBaseInfo, vm *VM) HardwareDevice {
 	return &powerController{DeviceBaseInfo: base, vm: vm}
 }
@@ -255,21 +236,14 @@ func (p *powerController) GetInfo() HardwareDeviceInfo {
 // Command of 3 -> perform poweroff
 func (p *powerController) TrySend(_ InteractionID, command uint32, _ []byte) StatusCode {
 	if command == 2 {
-		// Update the CPU mode to privileged
-		*p.vm.mode = 0
-		// Reset program counter and stack pointer
-		*p.vm.pc = reservedBytes
-		*p.vm.sp = heapSizeBytes
+		p.vm.setInitialVMState()
 
 		for _, device := range p.vm.devices {
 			device.Reset()
 		}
-
-		// Set up the stack with expected initial arguments
-		p.vm.pushInitialArgumentsToStack()
 	} else if command == 3 {
 		for _, device := range p.vm.devices {
-			device.Reset()
+			device.Close()
 		}
 
 		p.vm.errcode = errSystemShutdown
@@ -283,6 +257,15 @@ func (*powerController) Reset() {}
 func (*powerController) Close() {}
 
 // ------- Begin memory management unit
+type memoryManagement struct {
+	DeviceBaseInfo
+	vm *VM
+	// These specify the min/max addresses for the heap when in
+	// a privilege mode other than 0 (highest)
+	minHeapAddr uint32
+	maxHeapAddr uint32
+}
+
 func newMemoryManagement(base DeviceBaseInfo, vm *VM) HardwareDevice {
 	return &memoryManagement{
 		DeviceBaseInfo: base,
@@ -330,10 +313,24 @@ func (m *memoryManagement) Reset() {
 func (m *memoryManagement) Close() {}
 
 // ------- Begin console IO manager
+type consoleIO struct {
+	sync.Mutex
+
+	DeviceBaseInfo
+
+	vm           *VM
+	stdin        *bufio.Reader
+	charRequests *nonBlockingChan[InteractionID]
+
+	reset  bool
+	closed bool
+}
+
 func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
 	io := &consoleIO{
 		DeviceBaseInfo: base,
 		vm:             vm,
+		stdin:          bufio.NewReader(os.Stdin),
 		charRequests:   newNonBlockingChan[InteractionID](32),
 	}
 
@@ -349,24 +346,26 @@ func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
 		return r || io.closed
 	}
 
-	processOneRequest := func(iid InteractionID, data [4]byte) {
+	processOneRequest := func(iid InteractionID) {
 		if isResetOrClosed(true) {
 			return
 		}
 
-		r, _, _ := io.vm.stdin.ReadRune()
+		// This should be the only routine that accesses stdin in the whole codebase
+		r, _, _ := io.stdin.ReadRune()
 
 		// Acquire the lock and then check again to see if we need to close
 		io.Lock()
 		defer io.Unlock()
 		if isResetOrClosed(false) {
-			io.vm.stdin.UnreadRune()
+			io.stdin.UnreadRune()
 			return
 		}
 
 		// Pack the rune into bytes and send a response over the CPU bus
+		data := [4]byte{}
 		uint32ToBytes(uint32(r), data[:])
-		io.vm.responseBus.Send(NewResponse(io.InterruptAddr, iid, data[:], nil))
+		io.ResponseBus.Send(NewResponse(io.InterruptAddr, iid, data[:], nil))
 	}
 
 	// Start up the reader function
@@ -378,8 +377,7 @@ func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
 				return
 			}
 
-			data := [4]byte{}
-			processOneRequest(iid, data)
+			processOneRequest(iid)
 		}
 	}()
 
@@ -410,7 +408,7 @@ func (c *consoleIO) TrySend(id InteractionID, command uint32, data []byte) Statu
 		c.vm.stdout.Flush()
 	} else if command == 4 {
 		if ok := c.charRequests.send(id); !ok {
-			c.vm.responseBus.Send(NewResponse(c.InterruptAddr, id, nil, errIO))
+			c.ResponseBus.Send(NewResponse(c.InterruptAddr, id, nil, errIO))
 			return StatusDeviceBusy
 		}
 	}

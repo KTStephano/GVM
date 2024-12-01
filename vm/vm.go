@@ -56,7 +56,6 @@ type VM struct {
 
 	// Allows vm to read/write to some type of output
 	stdout *bufio.Writer
-	stdin  *bufio.Reader
 
 	// This gets written to whenever program encounters a normal or critical error
 	errcode error
@@ -124,9 +123,28 @@ var (
 	}
 )
 
-// Push the number of reserved bytes and the length of the process instruction bytes
-// as the initial arguments
-func (vm *VM) pushInitialArgumentsToStack() {
+func (vm *VM) setInitialVMState() {
+	// Set process start address
+	*vm.pc = reservedBytes
+
+	// Set stack pointer to be 1 after the last valid stack address
+	// (indexing this will trigger a seg fault)
+	*vm.sp = heapSizeBytes
+
+	// Clear the frame pointer
+	*vm.fp = 0
+
+	// Clear CPU mode (sets to max privilege)
+	*vm.mode = 0
+
+	// Clear error code
+	vm.errcode = nil
+
+	// Allow memory management device to potentially update memory bounds
+	vm.devices[2].TrySend(0, 3, nil)
+
+	// Push the number of reserved bytes and the length of the process instruction bytes
+	// as the initial arguments
 	vm.pushStack(reservedBytes)
 	vm.pushStack(vm.processInstructionBytes)
 }
@@ -156,7 +174,6 @@ func (bus *deviceResponseBus) Receive() *Response {
 // the beginning
 func NewVirtualMachine(program Program) *VM {
 	vm := &VM{
-		stdin:       bufio.NewReader(os.Stdin),
 		responseBus: newDeviceResponseBus(),
 	}
 
@@ -165,13 +182,6 @@ func NewVirtualMachine(program Program) *VM {
 	vm.sp = &vm.pubRegisters[1]
 	vm.mode = &vm.registers[numRegisters]
 	vm.fp = &vm.registers[numRegisters+1]
-
-	// Set process start address
-	*vm.pc = reservedBytes
-
-	// Set stack pointer to be 1 after the last valid stack address
-	// (indexing this will trigger a seg fault)
-	*vm.sp = heapSizeBytes
 
 	// Set available segment to initially point to entire memory region
 	vm.activeSegment = vm.memory[:]
@@ -209,7 +219,8 @@ func NewVirtualMachine(program Program) *VM {
 	}
 
 	vm.processInstructionBytes = uint32(len(program.instructions)) * instructionBytes
-	vm.pushInitialArgumentsToStack()
+
+	vm.setInitialVMState()
 
 	return vm
 }
