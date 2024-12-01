@@ -1,2 +1,3 @@
-# GVM
-Virtual machine written in Go
+![Icon](GVMIcon.png)
+
+# Virtual Machine (written in Go)
