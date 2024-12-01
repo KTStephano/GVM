@@ -23,6 +23,10 @@
     const 0xA4
     storep32
 
+    const __writeBytes
+    const 0xA8
+    storep32
+
     // Move into non-privileged mode
     const 1
     srstore 32          // special reserved register 32 (CPU mode)
@@ -63,13 +67,14 @@ __handleCharInput:
     resume
 
 // stack[0] -> return address
-// stack[1] -> 0-terminated string
+// stack[1] -> frame pointer
+// stack[2] -> 0-terminated string
 // register[2] will contain string length in bytes (not including 0-byte)
 strlen:
     rload 3              // load register[3] so we can restore it later
     
     rload 1              // load stack pointer
-    addi 8               // skip past register[3] and return address to stack pointer where string address sits
+    addi 12              // skip past register[3], ret addr and frame pointer to stack pointer where string address sits
     loadp32              // *stack[0] to get string address
     rstore 3             // place string address into register[3]
 
@@ -89,13 +94,29 @@ __strlenDone:
     return
 
 // stack[0] -> return address
-// stack[1] -> 0-terminated string address
+// stack[1] -> frame pointer
+// stack[2] -> 0-terminated string address
 print:
+    rload 3              // load value of register[3] so we can restore it later
     rload 1              // load stack pointer
-    addi 4               // skip past sp location with return address to sp location with string address
+    addi 12              // skip past value of register[3], ret addr and frame pointer
     loadp32              // *stack[0] to place string address on top of stack for argument to strlen
+    rkstore 3            // store string address in register[3], keep address on stack
     call strlen
+    sysint 0xA8          // system call to __writeBytes
+    pop 4                // remove trailing string address from stack
+    rstore 3             // restore value of register[3]
     return
+
+// 0xA8
+// register[2] should have string length, register[3] should have string address
+__writeBytes:
+    rload 3              // load string address
+    rload 2              // load string length
+    const 8              // 8 bytes of input
+    const 0              // unused interaction id
+    write 3 3            // port 3 = console IO device, command 3 = write N bytes from address
+    resume
 
 exit:
     sysint 0xA4

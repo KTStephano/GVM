@@ -81,6 +81,7 @@ const (
 	varchBytes   register = 4
 	varchBytesx2 register = 2 * varchBytes
 	varchBytesx3 register = 3 * varchBytes
+	varchBytesx4 register = 4 * varchBytes
 
 	// Reserved bytes are where we store the interrupt vector table
 	maxInterrupts           uint32 = 64
@@ -314,45 +315,60 @@ func (vm *VM) popStackFast(bytes uint32) {
 	*vm.sp += bytes
 }
 
+// Increments register, returns old value
+func getAndIncrement(reg *register, offset register) register {
+	v := *reg
+	*reg += offset
+	return v
+}
+
 // Returns top of stack before moving stack pointer forward
 func (vm *VM) popStack() []byte {
-	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
-	*vm.sp += varchBytes
+	sp := getAndIncrement(vm.sp, varchBytes)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
 	return bytes
 }
 
 // Returns top of stack (as uint32) before moving stack pointer forward
 func (vm *VM) popStackUint32() uint32 {
-	val := uint32FromBytes(vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):])
-	*vm.sp += varchBytes
+	sp := getAndIncrement(vm.sp, varchBytes)
+	val := uint32FromBytes(vm.activeSegment[vm.computeRelativeStackPointer(sp):])
 	return val
 }
 
 // Returns 1st and 2nd top stack values before moving stack pointer forward
 func (vm *VM) popStackx2() ([]byte, []byte) {
-	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
-	*vm.sp += varchBytesx2
+	sp := getAndIncrement(vm.sp, varchBytesx2)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
 	return bytes, bytes[varchBytes:]
 }
 
 // Returns 1st and 2nd top stack values (as uint32) before moving stack pointer forward
 func (vm *VM) popStackx2Uint32() (uint32, uint32) {
-	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
-	*vm.sp += varchBytesx2
+	sp := getAndIncrement(vm.sp, varchBytesx2)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
 	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:])
 }
 
 // Returns the top 3 stack values (as uint32) and moves the stack pointer forward
 func (vm *VM) popStackx3Uint32() (uint32, uint32, uint32) {
-	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
-	*vm.sp += varchBytesx3
+	sp := getAndIncrement(vm.sp, varchBytesx3)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
 	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:]), uint32FromBytes(bytes[varchBytesx2:])
+}
+
+// Returns the top 4 stack values (as uint32) and moves the stack pointer forward
+func (vm *VM) popStackx4Uint32() (uint32, uint32, uint32, uint32) {
+	sp := getAndIncrement(vm.sp, varchBytesx4)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
+	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:]),
+		uint32FromBytes(bytes[varchBytesx2:]), uint32FromBytes(bytes[varchBytesx3:])
 }
 
 // Pops the first argument, peeks the second
 func (vm *VM) popPeekStack() ([]byte, []byte) {
-	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
-	*vm.sp += varchBytes
+	sp := getAndIncrement(vm.sp, varchBytes)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
 	return bytes, bytes[varchBytes:]
 }
 
@@ -415,8 +431,12 @@ func (vm *VM) initForInterrupt() {
 
 	// Store state related to current frame to allow for later resume
 	vm.pushStack(*vm.mode)
+	vm.pushStack(*vm.fp)
 	vm.pushStack(sp)
 	vm.pushStack(*vm.pc)
+
+	// Update fp to point to new location
+	*vm.fp = *vm.sp
 
 	if *vm.mode != 0 {
 		// Clear the mode flag to signal max privilege
@@ -983,7 +1003,10 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 				continue
 			}
 
-			prevPc, prevSp, prevMode := vm.popStackx3Uint32()
+			// Back up to frame pointer
+			*vm.sp = *vm.fp
+
+			prevPc, prevSp, prevFp, prevMode := vm.popStackx4Uint32()
 			// Since resume is a privileged instruction, we know the current mode must be 0
 			// If prevMode is anything other than 0 (unprivileged), update the mode and notify memory manager
 			if prevMode != 0 {
@@ -992,10 +1015,10 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 				vm.devices[2].TrySend(0, 3, nil)
 			}
 
-			*vm.sp = prevSp
+			// Restore previous pc/sp/fp register states
 			*vm.pc = prevPc
-
-			// Check if the next instruction is halt (meaning we resumed into a halt)
+			*vm.sp = prevSp
+			*vm.fp = prevFp
 
 		case writeTwoArgs:
 			// privilege check

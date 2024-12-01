@@ -366,10 +366,8 @@ func (c *consoleIO) TrySend(id InteractionID, command uint32, data []byte) Statu
 		for i := uint32(0); i < numBytes; i++ {
 			b := c.vm.memory[addr+i]
 			c.vm.stdout.WriteByte(b)
-			if b == '\r' || b == '\n' {
-				c.vm.stdout.Flush()
-			}
 		}
+		c.vm.stdout.Flush()
 	} else if command == 4 {
 		fmt.Println("Attempting to read character")
 		if ok := c.charRequests.send(id); !ok {
