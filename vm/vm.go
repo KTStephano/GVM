@@ -37,6 +37,7 @@ type VM struct {
 	pc           *register // program counter
 	sp           *register // stack pointer (grows down (largest address towards smallest address))
 	mode         *register // CPU mode where 0x00 = max privilege, 0x01 = min privilege
+	fp           *register // frame pointer
 
 	memory [heapSizeBytes]byte
 	// activeSegment is a byte slice into the VM's memory
@@ -162,6 +163,7 @@ func NewVirtualMachine(program Program) *VM {
 	vm.pc = &vm.pubRegisters[0]
 	vm.sp = &vm.pubRegisters[1]
 	vm.mode = &vm.registers[numRegisters]
+	vm.fp = &vm.registers[numRegisters+1]
 
 	// Set process start address
 	*vm.pc = reservedBytes
@@ -898,17 +900,37 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(compare(math.Float32frombits(x), math.Float32frombits(y)), bytes)
 
-		// Begin call functions
+		// Begin call/return instructions
 		case callNoArgs:
 			bytes := vm.peekStack()
 			addr := uint32FromBytes(bytes)
-			uint32ToBytes(*pc, bytes)
-			*pc = addr
-		case callOneArg:
+			// Overwrite bytes with old frame pointer
+			uint32ToBytes(*vm.fp, bytes)
+			// Push program counter for next instruction
 			vm.pushStack(*pc)
-			*pc = oparg
 
-		// Begin special register load/store
+			*pc = addr
+			*vm.fp = *vm.sp
+		case callOneArg:
+			// Push old frame pointer
+			vm.pushStack(*vm.fp)
+			// Push program counter for next instruction
+			vm.pushStack(*pc)
+
+			*pc = oparg
+			*vm.fp = *vm.sp
+		case returnNoArgs:
+			// Back up stack to frame pointer
+			*vm.sp = *vm.fp
+
+			// Get program counter and old frame pointer
+			oldPc, oldFp := vm.popStackx2Uint32()
+
+			// Restore old PC and old FP
+			*vm.pc = oldPc
+			*vm.fp = oldFp
+
+		// Begin special register load/store instructions
 		case srLoadOneArg:
 			// privilege check
 			if *vm.mode != 0 {

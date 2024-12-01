@@ -150,7 +150,8 @@ package gvm
 		Function control flow
 
 			call [address] (push next program address to the stack and jump either to [address] or stack[0])
-			return 		   (compiles down to unconditional jump)
+			return 		   (clear current stack frame and return to caller)
+			-> note that call and return go together - a return without a call will break the program
 
 		The r* style of instructions accept a register as their first argument. If no second argument is given,
 		it performs registers[arg0] += stack[0] and overwrites the top stack value with the result. Otherwise it
@@ -253,17 +254,18 @@ const (
 	Shiftl Bytecode = 0x35
 	Shiftr Bytecode = 0x34
 
-	Jmp  Bytecode = 0x40
-	Jz   Bytecode = 0x41
-	Jnz  Bytecode = 0x42
-	Jle  Bytecode = 0x43
-	Jl   Bytecode = 0x44
-	Jge  Bytecode = 0x45
-	Jg   Bytecode = 0x46
-	Cmpu Bytecode = 0x47
-	Cmps Bytecode = 0x48
-	Cmpf Bytecode = 0x49
-	Call Bytecode = 0x4A
+	Jmp    Bytecode = 0x40
+	Jz     Bytecode = 0x41
+	Jnz    Bytecode = 0x42
+	Jle    Bytecode = 0x43
+	Jl     Bytecode = 0x44
+	Jge    Bytecode = 0x45
+	Jg     Bytecode = 0x46
+	Cmpu   Bytecode = 0x47
+	Cmps   Bytecode = 0x48
+	Cmpf   Bytecode = 0x49
+	Call   Bytecode = 0x4A
+	Return Bytecode = 0x4B
 
 	Raddi   Bytecode = 0x60
 	Raddf   Bytecode = 0x61
@@ -332,7 +334,7 @@ var (
 		"cmps":     Cmps,
 		"cmpf":     Cmpf,
 		"call":     Call,
-		"return":   Jmp, // compiles to an unconditional jump
+		"return":   Return,
 		"raddi":    Raddi,
 		"raddf":    Raddf,
 		"rsubi":    Rsubi,

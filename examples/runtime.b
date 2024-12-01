@@ -33,6 +33,7 @@
     // If we get here, call exit to quit
     call exit
 
+// stack[0] -> return address
 // read 1 character from stdin (return value is in register[2])
 readc: 
     sysint 0xA0         // make a system call to get the next character (result is stored in register[2])
@@ -60,6 +61,41 @@ __handleCharInput:
     pop 8               // get rid of the interaction id and byte count
     rstore 2            // store 32-bit character in register 2
     resume
+
+// stack[0] -> return address
+// stack[1] -> 0-terminated string
+// register[2] will contain string length in bytes (not including 0-byte)
+strlen:
+    rload 3              // load register[3] so we can restore it later
+    
+    rload 1              // load stack pointer
+    addi 8               // skip past register[3] and return address to stack pointer where string address sits
+    loadp32              // *stack[0] to get string address
+    rstore 3             // place string address into register[3]
+
+    const 0             
+    rkstore 2            // set up accumulator register, keep value on stack
+
+__strlenLoop:
+    rload 3              // load string address
+    addi                 // add counter to address
+    loadp8               // load byte from string address
+    jz __strlenDone      // if byte is zero, jump to __strlenDone
+    raddi 2 1            // increment acumulator register, store updated value on stack
+    jmp __strlenLoop
+
+__strlenDone:
+    rstore 3             // restore value of register[3]
+    return
+
+// stack[0] -> return address
+// stack[1] -> 0-terminated string address
+print:
+    rload 1              // load stack pointer
+    addi 4               // skip past sp location with return address to sp location with string address
+    loadp32              // *stack[0] to place string address on top of stack for argument to strlen
+    call strlen
+    return
 
 exit:
     sysint 0xA4
