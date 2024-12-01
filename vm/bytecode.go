@@ -147,6 +147,11 @@ package gvm
 			jge  (jump to address at stack[0] if stack[1] greater than or equal to 0)
 			jg   (jump to address at stack[0] if stack[1] greater than 0)
 
+		Function control flow
+
+			call [address] (push next program address to the stack and jump either to [address] or stack[0])
+			return 		   (compiles down to unconditional jump)
+
 		The r* style of instructions accept a register as their first argument. If no second argument is given,
 		it performs registers[arg0] += stack[0] and overwrites the top stack value with the result. Otherwise it
 		will perform registers[arg0] += arg1 and push the result to the stack. In both cases not only does the stack
@@ -327,6 +332,7 @@ var (
 		"cmps":     Cmps,
 		"cmpf":     Cmpf,
 		"call":     Call,
+		"return":   Jmp, // compiles to an unconditional jump
 		"raddi":    Raddi,
 		"raddf":    Raddf,
 		"rsubi":    Rsubi,

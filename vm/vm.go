@@ -257,7 +257,8 @@ func (vm *VM) printCurrentState() {
 		fmt.Println(instr)
 	}
 
-	fmt.Println("  registers>", vm.pubRegisters)
+	fmt.Println("  general registers>", vm.pubRegisters)
+	fmt.Println("  special registers>", vm.registers[numRegisters:])
 	fmt.Println("  stack>", vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):])
 
 	vm.printDebugOutput()
@@ -407,9 +408,12 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 }
 
 func (vm *VM) initForInterrupt() {
+	// Get snapshot of current stack pointer (resume will back up to this point)
+	sp := *vm.sp
+
 	// Store state related to current frame to allow for later resume
 	vm.pushStack(*vm.mode)
-	vm.pushStack(*vm.sp)
+	vm.pushStack(sp)
 	vm.pushStack(*vm.pc)
 
 	if *vm.mode != 0 {

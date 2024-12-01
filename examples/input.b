@@ -1,0 +1,3 @@
+main:
+    call readc
+    return

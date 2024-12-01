@@ -1,6 +1,7 @@
 package gvm
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -311,14 +312,18 @@ func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
 			return true
 		}
 
-		count, _ := io.vm.stdin.Read(data[:])
-		if count > 0 {
-			io.vm.responseBus.Send(NewResponse(io.InterruptAddr, iid, data[:], nil))
-			return true
-		}
+		r, _, _ := io.vm.stdin.ReadRune()
+		uint32ToBytes(uint32(r), data[:])
+		io.vm.responseBus.Send(NewResponse(io.InterruptAddr, iid, data[:], nil))
+		return true
+		// count, _ := io.vm.stdin.Read(data[:])
+		// if count > 0 {
+		// 	io.vm.responseBus.Send(NewResponse(io.InterruptAddr, iid, data[:], nil))
+		// 	return true
+		// }
 
 		// Request still needs processing
-		return false
+		//return false
 	}
 
 	// Start up the reader function
@@ -330,8 +335,10 @@ func newConsoleIO(base DeviceBaseInfo, vm *VM) HardwareDevice {
 				return
 			}
 
+			fmt.Println("Received char request")
+
 			data := [4]byte{}
-			for processOneRequest(iid, data) {
+			for !processOneRequest(iid, data) {
 			}
 		}
 	}()
@@ -364,6 +371,7 @@ func (c *consoleIO) TrySend(id InteractionID, command uint32, data []byte) Statu
 			}
 		}
 	} else if command == 4 {
+		fmt.Println("Attempting to read character")
 		if ok := c.charRequests.send(id); !ok {
 			c.vm.responseBus.Send(NewResponse(c.InterruptAddr, id, nil, errIO))
 			return StatusDeviceBusy
