@@ -140,6 +140,39 @@ var (
 		const 1
 		divi
 	`
+
+	memoryAddressSanityCheck1 = `
+		const 0x0
+		loadp32			   // memory address read from 0x00 should work
+
+		// Trigger shutdown
+        const 0             // no data required
+        const 0             // interation id unused
+        write 1 3           // port: 1 (power management unit)
+                            // cmd:  3 (perform poweroff)
+	`
+
+	memoryAddressSanityCheck2 = `
+		// adds input reserved bytes and program size bytes
+		addi
+		rstore 2           // store in register[2] (tells us the beginning of unused heap)
+
+		// Set up memory bounds
+		rload 1            // load stack pointer (max heap address)
+		rload 2            // load end of program+reserved segment (min heap address)
+		const 8            // 8 bytes of input to write
+		const 0            // unused interaction id
+		write 2 2          // set min/max memory bounds when in non-privileged mode
+		pop 4              // remove result of write from stack
+
+		// Move into non-privileged mode
+		const 1
+		srstore 32
+
+		// This should fail
+		const 0x00
+		loadp32
+	`
 )
 
 func TestVM(t *testing.T) {
@@ -175,4 +208,10 @@ func TestVM(t *testing.T) {
 
 	vm = compileAndCheckSource(t, deviceCheck)
 	runAndEnsureSpecificShutdown(t, vm, errSystemShutdown)
+
+	vm = compileAndCheckSource(t, memoryAddressSanityCheck1)
+	runAndEnsureSpecificShutdown(t, vm, errSystemShutdown)
+
+	vm = compileAndCheckSource(t, memoryAddressSanityCheck2)
+	runAndEnsureSpecificShutdown(t, vm, errSegmentationFault)
 }
