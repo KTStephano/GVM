@@ -12,7 +12,7 @@
     halt                // puts the CPU into a waiting state (timer interrupt will break out of this)
 
 poweroff:
-    const 0             // no date required
+    const 0             // no data required
     const 0             // interation id unused
     write 1 3           // port: 1 (power management unit)
                         // cmd:  3 (perform poweroff)

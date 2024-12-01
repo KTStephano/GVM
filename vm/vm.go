@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync/atomic"
 )
 
 // Each register is just a bit pattern with no concept of
@@ -20,6 +21,12 @@ type register = uint32
 type debugSymbols struct {
 	// maps from line num -> source
 	source map[int]string
+}
+
+// Allows devices to communicate information back to the CPU
+type deviceResponseBus struct {
+	responses     chan *Response
+	responseCount atomic.Int32
 }
 
 type VM struct {
@@ -37,8 +44,8 @@ type VM struct {
 	// runtime
 	activeSegment []byte
 
-	devices            [maxHWDevices]HardwareDevice
-	deviceResponseChan chan *Response
+	devices     [maxHWDevices]HardwareDevice
+	responseBus *deviceResponseBus
 
 	// For when the stack size has been restricted to a certain region of memory
 	stackOffsetBytes uint32
@@ -111,12 +118,33 @@ func (vm *VM) pushInitialArgumentsToStack() {
 	vm.pushStack(vm.processInstructionBytes)
 }
 
+func newDeviceResponseBus() *deviceResponseBus {
+	return &deviceResponseBus{
+		responses: make(chan *Response, 1),
+	}
+}
+
+func (bus *deviceResponseBus) Send(resp *Response) {
+	bus.responses <- resp
+	bus.responseCount.Add(1)
+}
+
+func (bus *deviceResponseBus) Ready() bool {
+	return bus.responseCount.Load() > 0
+}
+
+func (bus *deviceResponseBus) Receive() *Response {
+	resp := <-bus.responses
+	bus.responseCount.Add(-1)
+	return resp
+}
+
 // Takes a program and returns a VM that's ready to execute the program from
 // the beginning
 func NewVirtualMachine(program Program) *VM {
 	vm := &VM{
-		stdin:              bufio.NewReader(os.Stdin),
-		deviceResponseChan: make(chan *Response),
+		stdin:       bufio.NewReader(os.Stdin),
+		responseBus: newDeviceResponseBus(),
 	}
 
 	vm.pubRegisters = vm.registers[:numRegisters]
@@ -135,9 +163,9 @@ func NewVirtualMachine(program Program) *VM {
 	vm.activeSegment = vm.memory[:]
 
 	// Set up devices
-	vm.devices[0] = newSystemTimer(DeviceBaseInfo{InterruptAddr: 0, ResponseChan: vm.deviceResponseChan})
-	vm.devices[1] = newPowerController(DeviceBaseInfo{InterruptAddr: 1 * varchBytes, ResponseChan: vm.deviceResponseChan}, vm)
-	vm.devices[2] = newMemoryManagement(DeviceBaseInfo{InterruptAddr: 2 * varchBytes, ResponseChan: vm.deviceResponseChan}, vm)
+	vm.devices[0] = newSystemTimer(DeviceBaseInfo{InterruptAddr: 0, ResponseBus: vm.responseBus})
+	vm.devices[1] = newPowerController(DeviceBaseInfo{InterruptAddr: 1 * varchBytes, ResponseBus: vm.responseBus}, vm)
+	vm.devices[2] = newMemoryManagement(DeviceBaseInfo{InterruptAddr: 2 * varchBytes, ResponseBus: vm.responseBus}, vm)
 
 	// Initialize remainder of device slots with nodevice marker
 	for i := 0; i < int(maxHWDevices); i++ {
@@ -392,29 +420,26 @@ func (vm *VM) execInstructions(singleStep bool) {
 		// 	return
 		// }
 
-		var resp *Response
-		var handlerAddr uint32
-		select {
-		case resp = <-vm.deviceResponseChan:
-			handlerAddr = uint32FromBytes(vm.memory[resp.interruptAddr:])
-		default:
-		}
+		if vm.responseBus.Ready() {
+			resp := vm.responseBus.Receive()
+			handlerAddr := uint32FromBytes(vm.memory[resp.interruptAddr:])
 
-		if handlerAddr != 0 {
-			sp := *vm.sp
+			if handlerAddr != 0 {
+				sp := *vm.sp
 
-			// Store state related to current frame first
-			vm.pushStack(*pc)
-			vm.pushStack(sp)
-			vm.pushStack(*vm.mode)
+				// Store state related to current frame first
+				vm.pushStack(*pc)
+				vm.pushStack(sp)
+				vm.pushStack(*vm.mode)
 
-			// Store response information next
-			vm.pushStackSegment(resp.data)
-			vm.pushStack(uint32(len(resp.data)))
-			vm.pushStack(resp.id)
+				// Store response information next
+				vm.pushStackSegment(resp.data)
+				vm.pushStack(uint32(len(resp.data)))
+				vm.pushStack(resp.id)
 
-			// Redirect program counter to the handler's address
-			*pc = handlerAddr
+				// Redirect program counter to the handler's address
+				*pc = handlerAddr
+			}
 		}
 
 		code, opreg, oparg := decodeInstruction(vm.memory[*pc:])

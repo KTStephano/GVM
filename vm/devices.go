@@ -58,7 +58,7 @@ type HardwareDevice interface {
 type DeviceBaseInfo struct {
 	// Specifies the entry into the interrupt table to match up with
 	InterruptAddr uint32
-	ResponseChan  chan *Response
+	ResponseBus   *deviceResponseBus
 }
 
 // deviceIndex can usually be 0 unless trying to multiplex one port to multiple devices
@@ -137,7 +137,7 @@ func (t *systemTimer) TrySend(id InteractionID, command uint32, data []byte) Sta
 		<-timer.C
 		// Use nil data in response since calling code will interpret our response
 		// to mean the timer expired
-		t.ResponseChan <- NewResponse(t.InterruptAddr, id, nil)
+		t.ResponseBus.Send(NewResponse(t.InterruptAddr, id, nil))
 	}(time.Duration(uint32FromBytes(data)))
 
 	return StatusDeviceReady
