@@ -153,6 +153,12 @@ package gvm
 			return 		   (clear current stack frame and return to caller)
 			-> note that call and return go together - a return without a call will break the program
 
+			resume		   (similar to return, but for resuming from inside an interrupt handler)
+
+			sysint <address> (invokes a privileged interrupt handler at <address>)
+				-> note that address range [0xA0, 0x100) is marked as "public" so non-privileged code can use them to
+				   safely invoke a privileged handler
+
 		The r* style of instructions accept a register as their first argument. If no second argument is given,
 		it performs registers[arg0] += stack[0] and overwrites the top stack value with the result. Otherwise it
 		will perform registers[arg0] += arg1 and push the result to the stack. In both cases not only does the stack
@@ -196,7 +202,7 @@ package gvm
 
 					when this completes the stack will contain a status code the same as if command = 1 (see above)
 
-			exit (stops the program)
+			halt (puts CPU into "waiting for next instruction" state, which is interruptible)
 
 	Examples:
 			const 3 // stack: [3]
