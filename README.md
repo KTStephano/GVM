@@ -89,47 +89,47 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 | Bytecode | Args | Description |
 | --- | --- | --- |
 | nop | | No operation |
-| byte | <arg> | Pushes a 1-byte const value onto the stack |
-| const | <arg> | Pushes a 4-byte const value onto the stack |
-| rload | <register> | Loads value of register onto the stack |
-| rstore | <register> | Stores value of stack[0] into register and pops stack |
-| rkstore | <register> | Stores value of stack[0] into register and leaves stack unchanged |
+| byte | `<arg>` | Pushes a 1-byte const value onto the stack |
+| const | `<arg>` | Pushes a 4-byte const value onto the stack |
+| rload | `<register>` | Loads value of register onto the stack |
+| rstore | `<register>` | Stores value of stack[0] into register and pops stack |
+| rkstore | `<register>` | Stores value of stack[0] into register and leaves stack unchanged |
 | loadp8, loadp16, loadp32 | | Loads 8-, 16-, or 32-bit value from address at stack[0] onto stack (essentially stack[0] = *stack[0]) |
 | storep8, storep16, storep32 | | Narrows stack[1] to 8-, 16-, or 32-bits and writes it to address at stack[0] (essentially *stack[0] = cast(stack[1])) |
-| push | [constant] | Reserve constant bytes on the stack |
-| pop | [constant] | Free bytes back to the stack |
-| addi, addf | [constant] | int and float add of either stack[0]+stack[1], or stack[0]+constant |
-| subi, subf | [constant] | int and float subtraction |
-| muli, mulf | [constant] | int and float multiplication |
-| divi, divf | [constant] | int and float division |
-| remu, rems | [constant] | unsigned and signed remainder after integer division of stack[0]/stack[1], or stack[0]/constant |
-| remf | [constant] | Remainder after floating point division of stack[0]/stack[1], or stack[0]/constant |
+| push | `[constant]` | Reserve constant bytes on the stack |
+| pop | `[constant]` | Free bytes back to the stack |
+| addi, addf | `[constant]` | int and float add of either stack[0]+stack[1], or stack[0]+constant |
+| subi, subf | `[constant]` | int and float subtraction |
+| muli, mulf | `[constant]` | int and float multiplication |
+| divi, divf | `[constant]` | int and float division |
+| remu, rems | `[constant]` | unsigned and signed remainder after integer division of stack[0]/stack[1], or stack[0]/constant |
+| remf | `[constant]` | Remainder after floating point division of stack[0]/stack[1], or stack[0]/constant |
 | not | | Inverts all bits of stack[0] |
-| and | [constant] | Logical AND between stack[0] and stack[1]/constant |
-| or | [constant] | Logical OR between stack[0] and stack[1]/constant |
-| xor | [constant] | Logical XOR between stack[0] and stack[1]/constant |
-| shiftl | [constant] | Shift stack[0] left by stack[1]/constant |
-| shiftr | [constant] | Shift stack[0] right by stack[1]/constant |
-| jmp | [constant] | Unconditional jump to address at stack[0]/constant |
-| jz | [constant] | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is 0 |
-| jnz | [constant] | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is not 0 |
-| jle | [constant] | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is <= 0 |
-| jl | [constant] | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is < 0 |
-| jge | [constant] | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is >= 0 |
-| jg | [constant] | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is > 0 |
-| call | [address] | Push next program address to the stack and jump either to [address] or stack[0] |
+| and | `[constant]` | Logical AND between stack[0] and stack[1]/constant |
+| or | `[constant]` | Logical OR between stack[0] and stack[1]/constant |
+| xor | `[constant]` | Logical XOR between stack[0] and stack[1]/constant |
+| shiftl | `[constant]` | Shift stack[0] left by stack[1]/constant |
+| shiftr | `[constant]` | Shift stack[0] right by stack[1]/constant |
+| jmp | `[constant]` | Unconditional jump to address at stack[0]/constant |
+| jz | `[constant]` | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is 0 |
+| jnz | `[constant]` | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is not 0 |
+| jle | `[constant]` | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is <= 0 |
+| jl | `[constant]` | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is < 0 |
+| jge | `[constant]` | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is >= 0 |
+| jg | `[constant]` | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is > 0 |
+| call | `[address]` | Push next program address to the stack and jump either to [address] or stack[0] |
 | return | | Clear stack back to beginning of current stack frame and return to caller |
 | resume | | Similar to return, but for resuming previous execution after interrupt handler is done |
-| sysint | <address> | Invokes a privileged interrupt handler at <address> |
-| raddi, raddf | <register> [constant] | Add register to stack[0]/constant, update register and push new result to stack |
-| rsubi, rsubf | <register> [constant] | Subtract register from stack[0]/constant, update register and push new result to stack  |
-| rmuli, rmulf | <register> [constant] | Multiply register with stack[0]/constant, update register and push new result to stack  |
-| rdivi, rdivf | <register> [constant] | Divide register and stack[0]/constant, update register and push new result to stack  |
-| rshiftl | <register> [constant] | Register shift left by stack[0]/constant, update register and push new result to stack |
-| rshiftr | <register> [constant] | Register shift right by stack[0]/constant, update register and push new result to stack |
+| sysint | `<address>` | Invokes a privileged interrupt handler at <address> |
+| raddi, raddf | `<register> [constant]` | Add register to stack[0]/constant, update register and push new result to stack |
+| rsubi, rsubf | `<register> [constant]` | Subtract register from stack[0]/constant, update register and push new result to stack  |
+| rmuli, rmulf | `<register> [constant]` | Multiply register with stack[0]/constant, update register and push new result to stack  |
+| rdivi, rdivf | `<register> [constant]` | Divide register and stack[0]/constant, update register and push new result to stack  |
+| rshiftl | `<register> [constant]` | Register shift left by stack[0]/constant, update register and push new result to stack |
+| rshiftr | `<register> [constant]` | Register shift right by stack[0]/constant, update register and push new result to stack |
 | cmpu, cmps | | unsigned and signed comparison between stack[0] and stack[1]: -1 if stack[0] < stack[1], 0 if stack[0] == stack[1] and 1 if stack[0] > stack[1] |
 | cmpf | | floating point comparison between stack[0] and stack[1]: -1 if stack[0] < stack[1], 0 if stack[0] == stack[1] and 1 if stack[0] > stack[1] |
-| write | <port> <command> | Performs a device write to request device at port perform some command (see below) |
+| write | `<port> <command>` | Performs a device write to request device at port perform some command (see below) |
 | halt | | Puts CPU into "waiting for next instruction" state, which is interruptible |
 
 # Interfacing with vDevices
