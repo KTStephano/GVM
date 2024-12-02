@@ -89,8 +89,8 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 | Bytecode | Args | Description |
 | --- | --- | --- |
 | nop | | No operation |
-| byte | `<arg>` | Pushes a 1-byte const value onto the stack |
-| const | `<arg>` | Pushes a 4-byte const value onto the stack |
+| byte | `<constant>` | Pushes a 1-byte const value onto the stack |
+| const | `<constant>` | Pushes a 4-byte const value onto the stack |
 | rload | `<register>` | Loads value of register onto the stack |
 | rstore | `<register>` | Stores value of stack[0] into register and pops stack |
 | rkstore | `<register>` | Stores value of stack[0] into register and leaves stack unchanged |
