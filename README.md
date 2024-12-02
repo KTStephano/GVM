@@ -18,6 +18,8 @@ The GVM executable accepts a `-debug` flag as well for starting the program in d
 
 # Specification
 
+![Overview](GVMDesignOverview.png)
+
 ### vCPU
 - Single core, 32-bit virtual architecture with little endian byte ordering
 - Supports a set of hardware/software interrupts totaling 64
@@ -36,6 +38,8 @@ The GVM executable accepts a `-debug` flag as well for starting the program in d
 - Minimum of 65KB total memory (shared with interrupt addresses and process instructions)
 - Stack grows down from max address -> min address
 - Segmentation of heap when in non-privileged mode is possible by interfacing with memory controller device
+
+![ProcAddrSpace](GVMProcAddrSpace.png)
 
 ### vDevices
 - Supports 16 virtual devices
