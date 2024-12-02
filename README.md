@@ -99,7 +99,7 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 | rload | `<register>` | Loads value of register onto the stack |
 | rstore | `<register>` | Stores value of stack[0] into register and pops stack |
 | rkstore | `<register>` | Stores value of stack[0] into register and leaves stack unchanged |
-| loadp8, loadp16, loadp32 | | Loads 8-, 16-, or 32-bit value from address at stack[0] onto stack (essentially stack[0] = *stack[0]) |
+| loadp8, loadp16, loadp32 | | Loads 8-, 16-, or 32-bit value from address at stack[0] onto stack (essentially stack[0] = *stack[0]) - result is widened to 32 bits |
 | storep8, storep16, storep32 | | Narrows stack[1] to 8-, 16-, or 32-bits and writes it to address at stack[0] (essentially *stack[0] = cast(stack[1])) |
 | push | `[constant]` | Reserve constant bytes on the stack |
 | pop | `[constant]` | Free bytes back to the stack |
@@ -144,7 +144,7 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 - - when this completes the stack will contain:
 - - - stack[0] = HWID
 - - - stack[1] = num metadata bytes (can be 0)
-- - - stac[2]+ = metadata bytes
+- - - stack[2]+ = metadata bytes
 
 - if `command` = 1, performs get hardware device status (stack should contain 2 constant arguments of 0, 0 which means unused interaction id and no bytes as input)
 - - when this completes it will push a 32-bit status code to the stack:

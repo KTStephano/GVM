@@ -187,7 +187,7 @@ package gvm
 					when this completes the stack will contain:
 						-> stack[0] = HWID
 						-> stack[1] = num metadata bytes (can be 0)
-						-> stac[2]+ = metadata bytes
+						-> stack[2]+ = metadata bytes
 
 				-> if command = 1, performs get hardware device status
 					when this completes it will push a 32-bit status code to the stack:
