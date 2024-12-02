@@ -8,10 +8,66 @@ package gvm
 			- register 0 is the program counter
 			- register 1 is the stack pointer
 			- registers indexed 2 through 31 are general purpose, 32-bit
+			- 8 specialized registers (sr/srs)
+			- sr 0 is the CPU "mode" - 0 means unprivileged, 1 means privileged
+			- sr 1 is the memory segment start (when in unprivileged mode)
+			- sr 2 is the memory segment end (when in unprivileged mode)
+			- srs 3-5 are reserved
+			- srs 6-7 can be used for anything
 			- supports single stepping through instructions
 			- supports setting program breakpoints
 
-	The stack is 64kb in size minimum
+	The memory segment is 64kb in size minimum
+		- bytes 0-255 are reserved for the interrupt vector table (IVT)
+		- startup program starts at byte 256
+		- by default, entire memory segment is read/write at startup
+
+	Devices
+		- There are 16 device slots (indexed 0-15 when using write instruction)
+		- write instruction accepts a command:
+			-> 0 means "get device info"
+			-> 1 means "get device status"
+			-> 2+ are device specific
+		- port 0 (handler address 0x00) is system timer
+			-> command 2 is "set new timer"
+				-> expects 4 byte input representing microseconds
+		- port 1 (handler address 0x04) is power controller
+			-> command 2 is "perform restart"
+				-> expects no inputs
+			-> command 3 is "perform poweroff"
+				-> expects no inputs
+		- port 2 (handler address 0x08) is memory management unit
+			-> command 2 is "set new min/max heap addr bounds" (only applies to non-privileged code)
+				-> expects 8 byte input
+					-> first 4 bytes: min heap address
+					-> next 4 bytes: max heap address
+			-> command 3 is "update to previously set min/max based on privilege level"
+				-> expects no input
+				-> if CPU mode is 0 (max privilege), unlocks entire memory address range
+				-> if CPU mode is not 0 (non-privileged mode), resets to previous min/max heap addresses
+		- port 3 (handler address 0x0C) is console IO
+			-> command 2 is "write a single 32-bit character"
+				-> expects 4 byte input
+			-> command 3 is "write N bytes from address"
+				-> expects 8 byte input
+					-> first 4 bytes: number of bytes to write
+					-> next 4 bytes: address to start reading bytes from
+			-> command 4 is "read 32-bit character"
+				-> expects no input
+				-> when data comes in, it is forwarded to handler address 0x0C
+		- ports 4-15 are currently unused
+
+	Exceptions
+		- There are 5 exceptions that can be caught and handled by the code
+		- segmentation fault (handler address 0x40)
+		- division by zero (handler address 0x44)
+		- unknown instruction (handler address 0x48)
+		- illegal instruction (handler address 0x76)
+		- IO error (handler address 0x50)
+		- [0x54, 0xA0) are currently unused
+
+	Public interrupts
+		- Address range [0xA0, 0x100) can be called from public code and are unspecified what they are for
 
 	This bytecode instruction set attempts to strike a balance between the extreme simplicity
 	of a stack-based design and the increased complexity but better performance (at least for interpreter VMs) of
@@ -37,9 +93,9 @@ package gvm
 			byte   <constant> (pushes byte value onto the stack)
 			const  <constant> (pushes const value onto stack (can be a label))
 
-			load   <register> (loads value of register)
-			store  <register> (stores value of stack[0] to register)
-			kstore <register> (stores value of stack[0] to register and keeps value on the stack)
+			rload   <register> (loads value of register)
+			rstore  <register> (stores value of stack[0] to register)
+			rkstore <register> (stores value of stack[0] to register and keeps value on the stack)
 
 			loadp8, loadp16, loadp32 (loads 8, 16 or 32 bit value from address at stack[0], widens to 32 bits)
 				loadpX are essentially stack[0] = *stack[0]
@@ -91,6 +147,18 @@ package gvm
 			jge  (jump to address at stack[0] if stack[1] greater than or equal to 0)
 			jg   (jump to address at stack[0] if stack[1] greater than 0)
 
+		Function control flow
+
+			call [address] (push next program address to the stack and jump either to [address] or stack[0])
+			return 		   (clear current stack frame and return to caller)
+			-> note that call and return go together - a return without a call will break the program
+
+			resume		   (similar to return, but for resuming from inside an interrupt handler)
+
+			sysint <address> (invokes a privileged interrupt handler at <address>)
+				-> note that address range [0xA0, 0x100) is marked as "public" so non-privileged code can use them to
+				   safely invoke a privileged handler
+
 		The r* style of instructions accept a register as their first argument. If no second argument is given,
 		it performs registers[arg0] += stack[0] and overwrites the top stack value with the result. Otherwise it
 		will perform registers[arg0] += arg1 and push the result to the stack. In both cases not only does the stack
@@ -114,12 +182,27 @@ package gvm
 			cmps
 			cmpf
 
-			writeb (writes 1 8-bit value to stdout buffer from address stored at stack[0])
-			writec (writes 1 32-bit value to stdout buffer from stack[0])
-			flush  (flushes stdout buffer to console)
-			readc  (reads 1 character from stdin - pushes to stack as 32-bit value)
+			write <port> <command> (port is a device index from 0-15)
+				-> if command = 0, performs get hardware device info
+					when this completes the stack will contain:
+						-> stack[0] = HWID
+						-> stack[1] = num metadata bytes (can be 0)
+						-> stac[2]+ = metadata bytes
 
-			exit (stops the program)
+				-> if command = 1, performs get hardware device status
+					when this completes it will push a 32-bit status code to the stack:
+						-> 0x00 = device not found
+						-> 0x01 = device ready (write req would succeed)
+						-> 0x02 = device busy (write req would fail)
+
+				-> otherwise
+					input stack[0] should be the interaction id (for identifying request when response comes in)
+					input stack[1] should be the number of bytes to write
+					input stack[2] should be the start of the data to write
+
+					when this completes the stack will contain a status code the same as if command = 1 (see above)
+
+			halt (puts CPU into "waiting for next instruction" state, which is interruptible)
 
 	Examples:
 			const 3 // stack: [3]
@@ -143,11 +226,11 @@ type Bytecode byte
 const (
 	Nop Bytecode = 0x00
 
-	Byte   Bytecode = 0x01
-	Const  Bytecode = 0x02
-	Load   Bytecode = 0x03
-	Store  Bytecode = 0x04
-	Kstore Bytecode = 0x05
+	Byte    Bytecode = 0x01
+	Const   Bytecode = 0x02
+	Rload   Bytecode = 0x03
+	Rstore  Bytecode = 0x04
+	Rkstore Bytecode = 0x05
 
 	Loadp8   Bytecode = 0x10
 	Loadp16  Bytecode = 0x11
@@ -177,21 +260,18 @@ const (
 	Shiftl Bytecode = 0x35
 	Shiftr Bytecode = 0x34
 
-	Jmp  Bytecode = 0x40
-	Jz   Bytecode = 0x41
-	Jnz  Bytecode = 0x42
-	Jle  Bytecode = 0x43
-	Jl   Bytecode = 0x44
-	Jge  Bytecode = 0x45
-	Jg   Bytecode = 0x46
-	Cmpu Bytecode = 0x47
-	Cmps Bytecode = 0x48
-	Cmpf Bytecode = 0x49
-
-	Writeb Bytecode = 0x50
-	Writec Bytecode = 0x51
-	Flush  Bytecode = 0x52
-	Readc  Bytecode = 0x53
+	Jmp    Bytecode = 0x40
+	Jz     Bytecode = 0x41
+	Jnz    Bytecode = 0x42
+	Jle    Bytecode = 0x43
+	Jl     Bytecode = 0x44
+	Jge    Bytecode = 0x45
+	Jg     Bytecode = 0x46
+	Cmpu   Bytecode = 0x47
+	Cmps   Bytecode = 0x48
+	Cmpf   Bytecode = 0x49
+	Call   Bytecode = 0x4A
+	Return Bytecode = 0x4B
 
 	Raddi   Bytecode = 0x60
 	Raddf   Bytecode = 0x61
@@ -204,7 +284,15 @@ const (
 	Rshiftr Bytecode = 0x68
 	Rshiftl Bytecode = 0x69
 
-	Exit Bytecode = 0xFF
+	Sysint Bytecode = 0x70
+	Resume Bytecode = 0x71
+
+	Write Bytecode = 0xF1
+
+	Srload  Bytecode = 0xF2
+	Srstore Bytecode = 0xF3
+
+	Halt Bytecode = 0xFF
 )
 
 var (
@@ -213,9 +301,9 @@ var (
 		"nop":      Nop,
 		"byte":     Byte,
 		"const":    Const,
-		"load":     Load,
-		"store":    Store,
-		"kstore":   Kstore,
+		"rload":    Rload,
+		"rstore":   Rstore,
+		"rkstore":  Rkstore,
 		"loadp8":   Loadp8,
 		"loadp16":  Loadp16,
 		"loadp32":  Loadp32,
@@ -251,10 +339,8 @@ var (
 		"cmpu":     Cmpu,
 		"cmps":     Cmps,
 		"cmpf":     Cmpf,
-		"writeb":   Writeb,
-		"writec":   Writec,
-		"flush":    Flush,
-		"readc":    Readc,
+		"call":     Call,
+		"return":   Return,
 		"raddi":    Raddi,
 		"raddf":    Raddf,
 		"rsubi":    Rsubi,
@@ -265,7 +351,12 @@ var (
 		"rdivf":    Rdivf,
 		"rshiftl":  Rshiftl,
 		"rshiftr":  Rshiftr,
-		"exit":     Exit,
+		"sysint":   Sysint,
+		"resume":   Resume,
+		"write":    Write,
+		"srload":   Srload,
+		"srstore":  Srstore,
+		"halt":     Halt,
 	}
 
 	// Maps from instruction -> string (built from strToInstrMap)
@@ -283,12 +374,16 @@ func (b Bytecode) String() string {
 
 // True if the bytecode deals with register load/store/arithmetic/logic
 func (b Bytecode) IsRegisterOp() bool {
-	return b == Load || b.IsRegisterWriteOp()
+	return b == Rload || b.IsRegisterWriteOp()
+}
+
+func (b Bytecode) IsPrivilegedRegisterOp() bool {
+	return b == Srload || b == Srstore
 }
 
 // Returns true for all instructions that write to a register
 func (b Bytecode) IsRegisterWriteOp() bool {
-	return b == Store || b == Kstore || b.IsRegisterReadWriteOp()
+	return b == Rstore || b == Rkstore || b.IsRegisterReadWriteOp()
 }
 
 // Returns true for all instructions that both read and write to a register
@@ -297,10 +392,17 @@ func (b Bytecode) IsRegisterReadWriteOp() bool {
 		b == Rshiftl || b == Rshiftr
 }
 
+// Returns true if the instruction deals with hardware device interfacing
+func (b Bytecode) IsHardwareDeviceOp() bool {
+	return b == Write
+}
+
 // True if the bytecode requires an argument to be paired with it, such as const X
 func (b Bytecode) NumRequiredOpArgs() int {
-	if b == Const || b == Byte || b.IsRegisterOp() {
+	if b == Const || b == Byte || b.IsRegisterOp() || b == Srload || b == Srstore || b == Sysint {
 		return 1
+	} else if b.IsHardwareDeviceOp() {
+		return 2
 	} else {
 		return 0
 	}
@@ -314,6 +416,7 @@ func (b Bytecode) NumOptionalOpArgs() int {
 		b == Shiftl || b == Shiftr ||
 		b == Push || b == Pop ||
 		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg ||
+		b == Call ||
 		b.IsRegisterReadWriteOp() {
 		return 1
 	} else {

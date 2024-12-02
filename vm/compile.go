@@ -37,9 +37,9 @@ const (
 
 	byteOneArg   uint16 = 0x0100 | uint16(Byte)
 	constOneArg  uint16 = 0x0100 | uint16(Const)
-	loadOneArg   uint16 = 0x0100 | uint16(Load)
-	storeOneArg  uint16 = 0x0100 | uint16(Store)
-	kstoreOneArg uint16 = 0x0100 | uint16(Kstore)
+	loadOneArg   uint16 = 0x0100 | uint16(Rload)
+	storeOneArg  uint16 = 0x0100 | uint16(Rstore)
+	kstoreOneArg uint16 = 0x0100 | uint16(Rkstore)
 
 	loadp8NoArgs   uint16 = uint16(Loadp8)
 	loadp16NoArgs  uint16 = uint16(Loadp16)
@@ -112,10 +112,20 @@ const (
 	cmpsNoArgs uint16 = uint16(Cmps)
 	cmpfNoArgs uint16 = uint16(Cmpf)
 
-	writebNoArgs uint16 = uint16(Writeb)
-	writecNoArgs uint16 = uint16(Writec)
-	flushNoArgs  uint16 = uint16(Flush)
-	readcNoArgs  uint16 = uint16(Readc)
+	callNoArgs   uint16 = uint16(Call)
+	callOneArg   uint16 = 0x0100 | uint16(Call)
+	returnNoArgs uint16 = uint16(Return)
+
+	// writebNoArgs uint16 = uint16(Writeb)
+	// writecNoArgs uint16 = uint16(Writec)
+	// flushNoArgs  uint16 = uint16(Flush)
+	// readcNoArgs  uint16 = uint16(Readc)
+
+	sysintOneArg uint16 = 0x0100 | uint16(Sysint)
+	resumeNoArgs uint16 = uint16(Resume)
+
+	// readTwoArgs  uint16 = 0x0200 | uint16(Read)
+	writeTwoArgs uint16 = 0x0200 | uint16(Write)
 
 	raddiOneArg  uint16 = 0x0100 | uint16(Raddi)
 	raddiTwoArgs uint16 = 0x0200 | uint16(Raddi)
@@ -142,7 +152,10 @@ const (
 	rshiftROneArg  uint16 = 0x0100 | uint16(Rshiftr)
 	rshiftRTwoargs uint16 = 0x0200 | uint16(Rshiftr)
 
-	exitNoArgs uint16 = uint16(Exit)
+	srLoadOneArg  uint16 = 0x0100 | uint16(Srload)
+	srStoreOneArg uint16 = 0x0100 | uint16(Srstore)
+
+	haltNoArgs uint16 = uint16(Halt)
 )
 
 // Allows us to easily find and replace commands from start to end of line
@@ -257,9 +270,9 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][3]st
 			return nil, fmt.Errorf("invalid label: %s", line)
 		}
 
-		labels[r] = fmt.Sprintf("%d", len(lines)*int(instructionBytes))
+		labels[r] = fmt.Sprintf("%d", len(lines)*int(instructionBytes)+int(reservedBytes))
 		if debugSym != nil {
-			debugSym[len(lines)*int(instructionBytes)] = label
+			debugSym[len(lines)*int(instructionBytes)+int(reservedBytes)] = label
 			// For debug symbols we add a nop so that we can preserve this line in the code
 			return append(lines, [3]string{"nop", "", ""}), nil
 		} else {
@@ -321,14 +334,14 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][3]st
 			for i := len(bytes) - 1; i >= 0; i-- {
 				if debugSym != nil {
 					// Since it's a debug symbol, add back the escaped characters
-					debugSym[len(lines)*int(instructionBytes)] = revertEscapeSeqReplacements(fmt.Sprintf("%s '%c'", Byte.String(), bytes[i]))
+					debugSym[len(lines)*int(instructionBytes)+int(reservedBytes)] = revertEscapeSeqReplacements(fmt.Sprintf("%s '%c'", Byte.String(), bytes[i]))
 				}
 
 				lines = append(lines, [3]string{Byte.String(), fmt.Sprintf("%d", bytes[i]), resultArgs[1]})
 			}
 		} else {
 			if debugSym != nil {
-				debugSym[len(lines)*int(instructionBytes)] = line
+				debugSym[len(lines)*int(instructionBytes)+int(reservedBytes)] = line
 			}
 
 			// Forward result args unchanged
@@ -366,8 +379,6 @@ func inputArgToUint32(strArg string) (uint32, error) {
 
 			return math.Float32bits(float32(arg)), nil
 		} else {
-			var arg int64
-			var err error
 			base := 10
 			// Check for hex values
 			if strings.HasPrefix(strArg, "0x") {
@@ -376,12 +387,23 @@ func inputArgToUint32(strArg string) (uint32, error) {
 				strArg = strings.Replace(strArg, "0x", "", 1)
 			}
 
-			arg, err = strconv.ParseInt(strArg, base, 32)
+			var arg uint32
+			var err error
+			if strings.HasPrefix(strArg, "-") {
+				r, e := strconv.ParseInt(strArg, base, 32)
+				arg = uint32(r)
+				err = e
+			} else {
+				r, e := strconv.ParseUint(strArg, base, 32)
+				arg = uint32(r)
+				err = e
+			}
+
 			if err != nil {
 				return math.MaxUint32, err
 			}
 
-			return uint32(arg), nil
+			return arg, nil
 		}
 	}
 }
@@ -417,44 +439,30 @@ func parseInputLine(line [3]string) (Instruction, error) {
 		return Instruction{}, fmt.Errorf("%s can only support a max of %d args but got %d", code, maxArgs, numArgs)
 	}
 
-	if code.IsRegisterOp() {
+	if code.IsRegisterOp() || code.IsPrivilegedRegisterOp() {
 		// Register instructions accept a minimum of 1 16-bit argument, but some also have an optional
 		// 2nd 32-bit argument
 		return NewInstruction(byte(numArgs), code, uint16(args[0]), args[1]), nil
 	} else {
-		// Non-register instructions only accept 1 32-bit argument
-		return NewInstruction(byte(numArgs), code, 0, args[0]), nil
+		if numArgs > 1 {
+			return NewInstruction(byte(numArgs), code, uint16(args[0]), args[1]), nil
+		} else {
+			return NewInstruction(byte(numArgs), code, 0, args[0]), nil
+		}
 	}
 }
 
-// Takes a series of files and combines them into a program represented by a list of instructions
-// and a debug symbol map (if debug requested). The files are read sequentially so the first instruction
-// in the first file is what starts executing first.
-func CompileSource(debug bool, files ...string) (Program, error) {
+// Takes a buffer of lines and assembles them into a program represented by a list of instructions
+// and a debug symbol map (if debug requested).
+func CompileSourceFromBuffer(debug bool, lines []string) (Program, error) {
+	if len(lines) == 0 {
+		return Program{}, errors.New("no source lines given")
+	}
+
 	// If requested, set up the VM in debug mode
 	var debugSymMap map[int]string
 	if debug {
 		debugSymMap = make(map[int]string)
-	}
-
-	// Read each file
-	lines := make([]string, 0)
-	for _, filename := range files {
-		file, err := os.Open(filename)
-		if err != nil {
-			fmt.Println("Could not read", filename)
-			return Program{}, err
-		}
-
-		reader := bufio.NewReader(file)
-		for {
-			line, _, err := reader.ReadLine()
-			if err != nil {
-				break
-			}
-
-			lines = append(lines, string(line))
-		}
 	}
 
 	// Maps from regex(label) -> address string
@@ -511,6 +519,33 @@ func CompileSource(debug bool, files ...string) (Program, error) {
 	}
 
 	return Program{instructions: instructions, debugSymMap: debugSymMap}, nil
+}
+
+// Takes a series of files and assembles them into a program represented by a list of instructions
+// and a debug symbol map (if debug requested). The files are read sequentially so the first instruction
+// in the first file is what starts executing first.
+func CompileSource(debug bool, files ...string) (Program, error) {
+	// Read each file
+	lines := make([]string, 0)
+	for _, filename := range files {
+		file, err := os.Open(filename)
+		if err != nil {
+			fmt.Println("Could not read", filename)
+			return Program{}, err
+		}
+
+		reader := bufio.NewReader(file)
+		for {
+			line, _, err := reader.ReadLine()
+			if err != nil {
+				break
+			}
+
+			lines = append(lines, string(line))
+		}
+	}
+
+	return CompileSourceFromBuffer(debug, lines)
 }
 
 // This is called when package is first loaded (before main)

@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync/atomic"
 )
 
 // Each register is just a bit pattern with no concept of
@@ -22,20 +23,39 @@ type debugSymbols struct {
 	source map[int]string
 }
 
+// Allows devices to communicate information back to the CPU
+type deviceResponseBus struct {
+	responses     chan *Response
+	responseCount atomic.Int32
+}
+
 type VM struct {
-	registers [numRegisters]register
-	pc        *register // program counter
-	sp        *register // stack pointer (grows down (largest address towards smallest address))
+	// contains all pubRegisters including special reserved
+	registers [numRegisters + numReservedRegisters]register
+	// public registers (used for load/store)
+	pubRegisters []register
+	pc           *register // program counter
+	sp           *register // stack pointer (grows down (largest address towards smallest address))
+	mode         *register // CPU mode where 0x00 = max privilege, 0x01 = min privilege
+	fp           *register // frame pointer
 
-	memory [heapSize]byte
+	memory [heapSizeBytes]byte
+	// activeSegment is a byte slice into the VM's memory
+	// At the beginning it points to the entire available memory range, but can be restricted at
+	// runtime
+	activeSegment []byte
 
-	// Process is the initial code supplied to the VM
-	processSize      uint32
-	processSizeBytes uint32
+	devices     [maxHWDevices]HardwareDevice
+	responseBus *deviceResponseBus
+
+	// For when the stack size has been restricted to a certain region of memory
+	stackOffsetBytes uint32
+
+	// Tells us how many bytes the initial loaded program was
+	processInstructionBytes uint32
 
 	// Allows vm to read/write to some type of output
 	stdout *bufio.Writer
-	stdin  *bufio.Reader
 
 	// This gets written to whenever program encounters a normal or critical error
 	errcode error
@@ -45,43 +65,139 @@ type VM struct {
 	debugSym *debugSymbols
 }
 
+// Constrains to integer 32-bit types
 type integer32 interface {
 	int32 | uint32
 }
 
-// Constrains to types we can freely interpret their 32 bit pattern
+// Constrains to integer and floating point 32-bit types
 type numeric32 interface {
 	integer32 | float32
 }
 
 const (
-	numRegisters uint32 = 32
-	heapSize     uint32 = 65536
 	// 4 bytes since our virtual architecture is 32-bit
 	varchBytes   register = 4
 	varchBytesx2 register = 2 * varchBytes
+	varchBytesx3 register = 3 * varchBytes
+	varchBytesx4 register = 4 * varchBytes
+
+	// Reserved bytes are where we store the interrupt vector table
+	maxInterrupts           uint32 = 64
+	maxHWDevices            uint32 = 16
+	maxRestrictedInterrupts uint32 = maxHWDevices + 24
+	maxPublicInterrupts     uint32 = maxInterrupts - maxRestrictedInterrupts
+
+	reservedBytes        uint32 = maxInterrupts * varchBytes
+	numRegisters         uint32 = 32
+	numReservedRegisters uint32 = 8
+	heapSizeBytes        uint32 = 65536
+
+	// These are the memory address ranges that the interrupts occupy
+	// [0, interruptsAddrRange) -> includes privileged and unprivileged
+	interruptsAddrRange uint32 = reservedBytes
+	// [0, hwInterruptAddrRange)
+	hwInterruptAddrRange uint32 = maxHWDevices * varchBytes
+	// [0, restrictedInterruptsAddrRange) -> includes the hardware interrupts
+	restrictedInterruptsAddrRange uint32 = maxRestrictedInterrupts * varchBytes
+	// Lower addresses are occupied by the restricted interrupts
+	// [restrictedInterruptsAddrRange, publicInterruptsAddrRange)
+	publicInterruptsAddrRange uint32 = restrictedInterruptsAddrRange + maxPublicInterrupts*varchBytes
 )
 
 var (
-	errProgramFinished    = errors.New("ran out of instructions")
+	errSystemShutdown     = errors.New("system poweroff requested")
 	errSegmentationFault  = errors.New("segmentation fault")
 	errDivisionByZero     = errors.New("division by zero")
 	errUnknownInstruction = errors.New("instruction not recognized")
+	errIllegalInstruction = errors.New("illegal instruction (privilege too low)")
 	errIO                 = errors.New("input-output error")
+
+	// Maps from error code -> exception (interrupt) handler address
+	hardwareExceptionMap = map[error]uint32{
+		errSegmentationFault:  hwInterruptAddrRange + 0*varchBytes,
+		errDivisionByZero:     hwInterruptAddrRange + 1*varchBytes,
+		errUnknownInstruction: hwInterruptAddrRange + 2*varchBytes,
+		errIllegalInstruction: hwInterruptAddrRange + 3*varchBytes,
+		errIO:                 hwInterruptAddrRange + 4*varchBytes,
+	}
 )
+
+func (vm *VM) setInitialVMState() {
+	// Set process start address
+	*vm.pc = reservedBytes
+
+	// Set stack pointer to be 1 after the last valid stack address
+	// (indexing this will trigger a seg fault)
+	*vm.sp = heapSizeBytes
+
+	// Clear the frame pointer
+	*vm.fp = 0
+
+	// Clear CPU mode (sets to max privilege)
+	*vm.mode = 0
+
+	// Clear error code
+	vm.errcode = nil
+
+	// Allow memory management device to potentially update memory bounds
+	vm.devices[2].TrySend(0, 3, nil)
+
+	// Push the number of reserved bytes and the length of the process instruction bytes
+	// as the initial arguments
+	vm.pushStack(reservedBytes)
+	vm.pushStack(vm.processInstructionBytes)
+}
+
+func newDeviceResponseBus() *deviceResponseBus {
+	return &deviceResponseBus{
+		responses: make(chan *Response, 1),
+	}
+}
+
+func (bus *deviceResponseBus) Send(resp *Response) {
+	bus.responses <- resp
+	bus.responseCount.Add(1)
+}
+
+func (bus *deviceResponseBus) Ready() bool {
+	return bus.responseCount.Load() > 0
+}
+
+func (bus *deviceResponseBus) Receive() *Response {
+	resp := <-bus.responses
+	bus.responseCount.Add(-1)
+	return resp
+}
 
 // Takes a program and returns a VM that's ready to execute the program from
 // the beginning
 func NewVirtualMachine(program Program) *VM {
 	vm := &VM{
-		stdin: bufio.NewReader(os.Stdin),
+		responseBus: newDeviceResponseBus(),
 	}
 
-	vm.pc = &vm.registers[0]
-	vm.sp = &vm.registers[1]
-	// Set stack pointer to be 1 after the last valid stack address
-	// (indexing this will trigger a seg fault)
-	*vm.sp = heapSize
+	vm.pubRegisters = vm.registers[:numRegisters]
+	vm.pc = &vm.pubRegisters[0]
+	vm.sp = &vm.pubRegisters[1]
+	vm.mode = &vm.registers[numRegisters]
+	vm.fp = &vm.registers[numRegisters+1]
+
+	// Set available segment to initially point to entire memory region
+	vm.activeSegment = vm.memory[:]
+
+	// Set up devices
+	vm.devices[0] = newSystemTimer(DeviceBaseInfo{InterruptAddr: 0, ResponseBus: vm.responseBus})
+	vm.devices[1] = newPowerController(DeviceBaseInfo{InterruptAddr: 1 * varchBytes, ResponseBus: vm.responseBus}, vm)
+	vm.devices[2] = newMemoryManagement(DeviceBaseInfo{InterruptAddr: 2 * varchBytes, ResponseBus: vm.responseBus}, vm)
+	vm.devices[3] = newConsoleIO(DeviceBaseInfo{InterruptAddr: 3 * varchBytes, ResponseBus: vm.responseBus}, vm)
+
+	// Initialize remainder of device slots with nodevice marker
+	for i := 0; i < int(maxHWDevices); i++ {
+		if vm.devices[i] == nil {
+			vm.devices[i] = newNoDevice()
+		}
+	}
 
 	if program.debugSymMap != nil {
 		vm.debugOut = &strings.Builder{}
@@ -93,7 +209,7 @@ func NewVirtualMachine(program Program) *VM {
 
 	for i, instr := range program.instructions {
 		// Address in VM memory we will place this instruction
-		baseAddr := instructionBytes * uint32(i)
+		baseAddr := instructionBytes*uint32(i) + reservedBytes
 		bytes := vm.memory[baseAddr:]
 
 		// Convert instruction to a series of bytes in memory
@@ -102,33 +218,47 @@ func NewVirtualMachine(program Program) *VM {
 		uint32ToBytes(instr.arg, bytes[4:])
 	}
 
-	// Set base process size
-	vm.processSize = uint32(len(program.instructions))
-	vm.processSizeBytes = vm.processSize * instructionBytes
+	vm.processInstructionBytes = uint32(len(program.instructions)) * instructionBytes
+
+	vm.setInitialVMState()
 
 	return vm
 }
 
+// Returns a tuple of (code, register, oparg) without packaging it into an Instruction type
+func decodeInstruction(bytes []byte) (uint16, uint16, uint32) {
+	codeRegister := uint32FromBytes(bytes)
+	return uint16(codeRegister & 0x0000ffff), uint16((codeRegister & 0xffff0000) >> 16), uint32FromBytes(bytes[4:])
+}
+
 // Takes a series of bytes encoded as little endian and converts them to an instruction
-func decodeInstructionBytes(bytes []byte) Instruction {
+// Returns an Instruction type
+func decodeInstructionTyped(bytes []byte) Instruction {
+	codeRegister := uint32FromBytes(bytes)
 	return Instruction{
-		code:     uint16FromBytes(bytes),
-		register: uint16FromBytes(bytes[2:]),
+		code:     uint16(codeRegister & 0x0000ffff),
+		register: uint16((codeRegister & 0xffff0000) >> 16),
 		arg:      uint32FromBytes(bytes[4:]),
 	}
+}
+
+// Takes an absolute stack pointer (pointing to address in global memory segment) and
+// converts it to a stack pointer relative to the current stack slice
+func (vm *VM) computeRelativeStackPointer(sp uint32) uint32 {
+	return sp - vm.stackOffsetBytes
 }
 
 // Takes an instruction and attempts to format it in 2 ways:
 //  1. if debug symbols available, use that to print original source
 //  2. if no debug symbols, approximate the code (labels will have been replaced with numbers)
 func formatInstructionStr(vm *VM, pc register, prefix string) string {
-	if pc < vm.processSizeBytes {
+	if pc < heapSizeBytes {
 		if vm.debugSym != nil {
 			// Use debug symbols to print source as it was when first read in
 			return fmt.Sprintf(prefix+" %d: %s", pc, vm.debugSym.source[int(pc)])
 		} else {
 			// Use instruction -> string conversion since we don't have debug symbols
-			return fmt.Sprintf(prefix+" %d: %s", pc, decodeInstructionBytes(vm.memory[pc:]))
+			return fmt.Sprintf(prefix+" %d: %s", pc, decodeInstructionTyped(vm.memory[pc:]))
 		}
 	}
 
@@ -141,8 +271,9 @@ func (vm *VM) printCurrentState() {
 		fmt.Println(instr)
 	}
 
-	fmt.Println("  registers>", vm.registers)
-	fmt.Println("  stack>", vm.memory[*vm.sp:])
+	fmt.Println("  general registers>", vm.pubRegisters)
+	fmt.Println("  special registers>", vm.registers[numRegisters:])
+	fmt.Println("  stack>", vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):])
 
 	vm.printDebugOutput()
 }
@@ -154,14 +285,15 @@ func (vm *VM) printDebugOutput() {
 }
 
 func (vm *VM) printProgram() {
-	for i := range vm.processSize {
-		fmt.Println(formatInstructionStr(vm, register(i)*instructionBytes, " "))
+	numInstructions := vm.processInstructionBytes / instructionBytes
+	for i := range numInstructions {
+		fmt.Print(formatInstructionStr(vm, register(i)*instructionBytes+reservedBytes, " "))
+		if (i*instructionBytes + reservedBytes) == *vm.pc {
+			fmt.Print(" <- next instruction\n")
+		} else {
+			fmt.Println()
+		}
 	}
-}
-
-// Converts bytes -> uint16
-func uint16FromBytes(bytes []byte) uint16 {
-	return binary.LittleEndian.Uint16(bytes)
 }
 
 // Converts uint16 to a sequence of 2 bytes encoded as little endian
@@ -186,54 +318,95 @@ func float32ToBytes(f float32, bytes []byte) {
 
 // Returns current top of stack without moving stack pointer
 func (vm *VM) peekStack() []byte {
-	return vm.memory[*vm.sp:]
+	return vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
+}
+
+// Reserves space on the stack without returning anything
+func (vm *VM) pushStackFast(bytes uint32) {
+	*vm.sp -= bytes
+}
+
+// Removes bytes from the stack without returning anything
+func (vm *VM) popStackFast(bytes uint32) {
+	*vm.sp += bytes
+}
+
+// Increments register, returns old value
+func getAndIncrement(reg *register, offset register) register {
+	v := *reg
+	*reg += offset
+	return v
 }
 
 // Returns top of stack before moving stack pointer forward
 func (vm *VM) popStack() []byte {
-	bytes := vm.memory[*vm.sp:]
-	*vm.sp += varchBytes
+	sp := getAndIncrement(vm.sp, varchBytes)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
 	return bytes
 }
 
 // Returns top of stack (as uint32) before moving stack pointer forward
 func (vm *VM) popStackUint32() uint32 {
-	val := uint32FromBytes(vm.memory[*vm.sp:])
-	*vm.sp += varchBytes
+	sp := getAndIncrement(vm.sp, varchBytes)
+	val := uint32FromBytes(vm.activeSegment[vm.computeRelativeStackPointer(sp):])
 	return val
 }
 
 // Returns 1st and 2nd top stack values before moving stack pointer forward
 func (vm *VM) popStackx2() ([]byte, []byte) {
-	bytes := vm.memory[*vm.sp:]
-	*vm.sp += varchBytesx2
+	sp := getAndIncrement(vm.sp, varchBytesx2)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
 	return bytes, bytes[varchBytes:]
 }
 
 // Returns 1st and 2nd top stack values (as uint32) before moving stack pointer forward
 func (vm *VM) popStackx2Uint32() (uint32, uint32) {
-	bytes := vm.memory[*vm.sp:]
-	*vm.sp += varchBytesx2
+	sp := getAndIncrement(vm.sp, varchBytesx2)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
 	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:])
+}
+
+// Returns the top 3 stack values (as uint32) and moves the stack pointer forward
+func (vm *VM) popStackx3Uint32() (uint32, uint32, uint32) {
+	sp := getAndIncrement(vm.sp, varchBytesx3)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
+	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:]), uint32FromBytes(bytes[varchBytesx2:])
+}
+
+// Returns the top 4 stack values (as uint32) and moves the stack pointer forward
+func (vm *VM) popStackx4Uint32() (uint32, uint32, uint32, uint32) {
+	sp := getAndIncrement(vm.sp, varchBytesx4)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
+	return uint32FromBytes(bytes), uint32FromBytes(bytes[varchBytes:]),
+		uint32FromBytes(bytes[varchBytesx2:]), uint32FromBytes(bytes[varchBytesx3:])
 }
 
 // Pops the first argument, peeks the second
 func (vm *VM) popPeekStack() ([]byte, []byte) {
-	bytes := vm.memory[*vm.sp:]
-	*vm.sp += varchBytes
+	sp := getAndIncrement(vm.sp, varchBytes)
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(sp):]
 	return bytes, bytes[varchBytes:]
 }
 
 // Narrows value to 1 byte and pushes it to the stack
 func (vm *VM) pushStackByte(value register) {
 	*vm.sp--
-	vm.memory[*vm.sp] = byte(value)
+	vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)] = byte(value)
 }
 
 // Pushes value to stack unmodified
 func (vm *VM) pushStack(value register) {
 	*vm.sp -= varchBytes
-	uint32ToBytes(value, vm.memory[*vm.sp:])
+	uint32ToBytes(value, vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):])
+}
+
+// Pushes a sequence of bytes to the stack
+func (vm *VM) pushStackSegment(data []byte) {
+	*vm.sp -= register(len(data))
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
+	for i := register(0); i < uint32(len(data)); i++ {
+		bytes[i] = data[i]
+	}
 }
 
 // Peeks the first item off the stack, converts it to uint32 and returns the stack
@@ -268,6 +441,28 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 	return uint32(x % y), nil
 }
 
+func (vm *VM) initForInterrupt() {
+	// Get snapshot of current stack pointer (resume will back up to this point)
+	sp := *vm.sp
+
+	// Store state related to current frame to allow for later resume
+	vm.pushStack(*vm.mode)
+	vm.pushStack(*vm.fp)
+	vm.pushStack(sp)
+	vm.pushStack(*vm.pc)
+
+	// Update fp to point to new location
+	*vm.fp = *vm.sp
+
+	if *vm.mode != 0 {
+		// Clear the mode flag to signal max privilege
+		*vm.mode = 0
+
+		// Allow memory management device to potentially update memory bounds
+		vm.devices[2].TrySend(0, 3, nil)
+	}
+}
+
 // Instruction fetch, decode+execute
 //
 // This is considered a tight loop. Some of the normal programming conveniences and patterns
@@ -281,19 +476,60 @@ func arithRemi[T integer32](x, y T) (uint32, error) {
 // and then returns to caller.
 //
 // The current design of this function attempts to balance performance, readability and code reuse.
-func (vm *VM) execInstructions(singleStep bool) {
+func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			vm.errcode = errSegmentationFault
+			// Signal to caller that we want to retry execution
+			retcode = true
+		}
+	}()
+
 	for {
 		pc := vm.pc
-		if *pc >= vm.processSizeBytes {
-			vm.errcode = errProgramFinished
-			return
+
+		// Possible this was set to non-nil during a device interaction
+		if vm.errcode != nil {
+			handlerAddr, ok := hardwareExceptionMap[vm.errcode]
+			// Possible that this exception is not one of the ones we are allowed to recover from
+			if !ok {
+				return false
+			}
+
+			handlerAddr = uint32FromBytes(vm.memory[handlerAddr:])
+			// Possible there has not been a handler configured for this exception
+			if handlerAddr == 0 {
+				return false
+			}
+
+			vm.initForInterrupt()
+			*pc = handlerAddr
+
+			// Reset the error flag
+			vm.errcode = nil
+		} else if vm.responseBus.Ready() {
+			resp := vm.responseBus.Receive()
+			if resp.deviceErr != nil {
+				vm.errcode = resp.deviceErr
+				continue
+			}
+
+			handlerAddr := uint32FromBytes(vm.memory[resp.interruptAddr:])
+			if handlerAddr != 0 {
+				// Store state related to current frame first
+				vm.initForInterrupt()
+
+				// Store response information next
+				vm.pushStackSegment(resp.data)
+				vm.pushStack(uint32(len(resp.data)))
+				vm.pushStack(resp.id)
+
+				// Redirect program counter to the handler's address
+				*pc = handlerAddr
+			}
 		}
 
-		instr := decodeInstructionBytes(vm.memory[*pc:])
-		code := instr.code
-		opreg := instr.register
-		oparg := instr.arg
-
+		code, opreg, oparg := decodeInstruction(vm.memory[*pc:])
 		*pc += instructionBytes
 
 		switch code {
@@ -303,65 +539,73 @@ func (vm *VM) execInstructions(singleStep bool) {
 		case constOneArg:
 			vm.pushStack(oparg)
 		case loadOneArg:
-			vm.pushStack(vm.registers[opreg])
+			vm.pushStack(vm.pubRegisters[opreg])
 		case storeOneArg:
 			regVal := uint32FromBytes(vm.popStack())
-			vm.registers[opreg] = register(regVal)
+			vm.pubRegisters[opreg] = register(regVal)
 		case kstoreOneArg:
 			regVal := uint32FromBytes(vm.peekStack())
-			vm.registers[opreg] = register(regVal)
+			vm.pubRegisters[opreg] = register(regVal)
 		case loadp8NoArgs:
 			bytes := vm.peekStack()
-			addr := uint32FromBytes(bytes)
-			uint32ToBytes(uint32(vm.memory[addr]), bytes)
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(bytes))
+			uint32ToBytes(uint32(vm.activeSegment[addr]), bytes)
 		case loadp16NoArgs:
 			bytes := vm.peekStack()
-			addr := uint32FromBytes(bytes)
-			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.memory[addr:])), bytes)
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(bytes))
+			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.activeSegment[addr:])), bytes)
 		case loadp32NoArgs:
 			bytes := vm.peekStack()
-			addr := uint32FromBytes(bytes)
-			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.memory[addr:])), bytes)
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(bytes))
+			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.activeSegment[addr:])), bytes)
 		case storep8NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
-			addr := uint32FromBytes(addrBytes)
-			vm.memory[addr] = valueBytes[0]
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(addrBytes))
+			vm.activeSegment[addr] = valueBytes[0]
 		case storep16NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
-			addr := uint32FromBytes(addrBytes)
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(addrBytes))
 
 			// unrolled loop
-			vm.memory[addr] = valueBytes[0]
-			vm.memory[addr+1] = valueBytes[1]
+			vm.activeSegment[addr] = valueBytes[0]
+			vm.activeSegment[addr+1] = valueBytes[1]
 		case storep32NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
-			addr := uint32FromBytes(addrBytes)
+			addr := vm.computeRelativeStackPointer(uint32FromBytes(addrBytes))
 
 			// unrolled loop
-			vm.memory[addr] = valueBytes[0]
-			vm.memory[addr+1] = valueBytes[1]
-			vm.memory[addr+2] = valueBytes[2]
-			vm.memory[addr+3] = valueBytes[3]
+			vm.activeSegment[addr] = valueBytes[0]
+			vm.activeSegment[addr+1] = valueBytes[1]
+			vm.activeSegment[addr+2] = valueBytes[2]
+			vm.activeSegment[addr+3] = valueBytes[3]
 		case pushNoArgs:
 			// push with no args, meaning we pull # bytes from the stack
 			bytes := vm.popStackUint32()
-			*vm.sp -= register(bytes)
+			vm.pushStackFast(bytes)
 			// This will ensure we catch invalid stack addresses
-			var _ = vm.memory[*vm.sp]
+			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
 		case pushOneArg:
 			// push <constant> meaning the byte value is inlined
-			*vm.sp -= register(oparg)
+			vm.pushStackFast(oparg)
 			// This will ensure we catch invalid stack addresses
-			var _ = vm.memory[*vm.sp]
+			var _ = vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp)]
 		case popNoArgs:
 			bytes := vm.popStackUint32()
-			*vm.sp = *vm.sp + register(bytes)
-			// This will ensure we catch invalid stack addresses
-			var _ = vm.memory[*vm.sp]
+			vm.popStackFast(bytes)
+
+			relative := vm.computeRelativeStackPointer(*vm.sp)
+			if relative > uint32(len(vm.activeSegment)) {
+				// This will ensure we catch invalid stack addresses
+				var _ = vm.activeSegment[relative]
+			}
 		case popOneArg:
-			*vm.sp -= register(oparg)
-			// This will ensure we catch invalid stack addresses
-			var _ = vm.memory[*vm.sp]
+			vm.popStackFast(oparg)
+
+			relative := vm.computeRelativeStackPointer(*vm.sp)
+			if relative > uint32(len(vm.activeSegment)) {
+				// This will ensure we catch invalid stack addresses
+				var _ = vm.activeSegment[relative]
+			}
 
 		// Begin add instructions
 		case addiNoArgs:
@@ -413,7 +657,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// and its discussion
 			if y == 0 {
 				vm.errcode = errDivisionByZero
-				return
+				continue
 			}
 
 			uint32ToBytes(x/y, bytes)
@@ -423,7 +667,7 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// and its discussion
 			if oparg == 0 {
 				vm.errcode = errDivisionByZero
-				return
+				continue
 			}
 
 			x, bytes := getStackOneInput(vm)
@@ -438,50 +682,50 @@ func (vm *VM) execInstructions(singleStep bool) {
 		// Begin radd instructions
 		case raddiOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] += x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] += x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case raddiTwoArgs:
-			vm.registers[opreg] += oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] += oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 		case raddfOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) + math.Float32frombits(x))
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) + math.Float32frombits(x))
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case raddfTwoArgs:
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) + math.Float32frombits(oparg))
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) + math.Float32frombits(oparg))
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		// Begin rsub instructions
 		case rsubiOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] -= x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] -= x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rsubiTwoArgs:
-			vm.registers[opreg] -= oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] -= oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 		case rsubfOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) - math.Float32frombits(x))
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) - math.Float32frombits(x))
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rsubfTwoArgs:
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) - math.Float32frombits(oparg))
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) - math.Float32frombits(oparg))
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		// Begin rmul instructions
 		case rmuliOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] *= x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] *= x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rmuliTwoArgs:
-			vm.registers[opreg] *= oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] *= oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 		case rmulfOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) * math.Float32frombits(x))
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) * math.Float32frombits(x))
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rmulfTwoArgs:
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) * math.Float32frombits(oparg))
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) * math.Float32frombits(oparg))
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		// Begin rdiv instructions
 		case rdiviOneArg:
@@ -491,47 +735,47 @@ func (vm *VM) execInstructions(singleStep bool) {
 			// and its discussion
 			if x == 0 {
 				vm.errcode = errDivisionByZero
-				return
+				continue
 			}
 
-			vm.registers[opreg] /= x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] /= x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rdiviTwoArgs:
 			// For ints we need to check for div by 0
 			// See https://stackoverflow.com/questions/23505212/floating-point-is-an-equality-comparison-enough-to-prevent-division-by-zero
 			// and its discussion
 			if oparg == 0 {
 				vm.errcode = errDivisionByZero
-				return
+				continue
 			}
 
-			vm.registers[opreg] /= oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] /= oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 		case rdivfOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) / math.Float32frombits(x))
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) / math.Float32frombits(x))
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rdivfTwoArgs:
-			vm.registers[opreg] = math.Float32bits(math.Float32frombits(vm.registers[opreg]) / math.Float32frombits(oparg))
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] = math.Float32bits(math.Float32frombits(vm.pubRegisters[opreg]) / math.Float32frombits(oparg))
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		// Begin register shift instructions
 		case rshiftLOneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] <<= x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] <<= x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 		case rshiftLTwoArgs:
-			vm.registers[opreg] <<= oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] <<= oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		case rshiftROneArg:
 			x, bytes := getStackOneInput(vm)
-			vm.registers[opreg] >>= x
-			uint32ToBytes(vm.registers[opreg], bytes)
+			vm.pubRegisters[opreg] >>= x
+			uint32ToBytes(vm.pubRegisters[opreg], bytes)
 
 		case rshiftRTwoargs:
-			vm.registers[opreg] >>= oparg
-			vm.pushStack(vm.registers[opreg])
+			vm.pubRegisters[opreg] >>= oparg
+			vm.pushStack(vm.pubRegisters[opreg])
 
 		// Begin remainder instructions
 		case remuNoArgs:
@@ -692,36 +936,146 @@ func (vm *VM) execInstructions(singleStep bool) {
 			x, y, bytes := getStackTwoInputs(vm)
 			uint32ToBytes(compare(math.Float32frombits(x), math.Float32frombits(y)), bytes)
 
-		// Begin console IO instructions
-		case writebNoArgs:
-			addr := vm.popStackUint32()
-			vm.stdout.WriteByte(vm.memory[addr])
-		case writecNoArgs:
-			character := rune(vm.popStackUint32())
-			vm.stdout.WriteRune(character)
-		case flushNoArgs:
-			vm.stdout.Flush()
-		case readcNoArgs:
-			character, _, err := vm.stdin.ReadRune()
-			if err != nil {
-				vm.errcode = errIO
-				return
-			}
-			vm.pushStack(uint32(character))
+		// Begin call/return instructions
+		case callNoArgs:
+			bytes := vm.peekStack()
+			addr := uint32FromBytes(bytes)
+			// Overwrite bytes with old frame pointer
+			uint32ToBytes(*vm.fp, bytes)
+			// Push program counter for next instruction
+			vm.pushStack(*pc)
 
-		case exitNoArgs:
-			// Sets the pc to be one after the last instruction
-			*pc = vm.processSizeBytes
+			*pc = addr
+			*vm.fp = *vm.sp
+		case callOneArg:
+			// Push old frame pointer
+			vm.pushStack(*vm.fp)
+			// Push program counter for next instruction
+			vm.pushStack(*pc)
+
+			*pc = oparg
+			*vm.fp = *vm.sp
+		case returnNoArgs:
+			// Back up stack to frame pointer
+			*vm.sp = *vm.fp
+
+			// Get program counter and old frame pointer
+			oldPc, oldFp := vm.popStackx2Uint32()
+
+			// Restore old PC and old FP
+			*vm.pc = oldPc
+			*vm.fp = oldFp
+
+		// Begin special register load/store instructions
+		case srLoadOneArg:
+			// privilege check
+			if *vm.mode != 0 {
+				vm.errcode = errIllegalInstruction
+				continue
+			}
+
+			vm.pushStack(vm.registers[opreg])
+		case srStoreOneArg:
+			// privilege check
+			if *vm.mode != 0 {
+				vm.errcode = errIllegalInstruction
+				continue
+			}
+
+			regVal := uint32FromBytes(vm.popStack())
+			vm.registers[opreg] = register(regVal)
+
+			// Allow memory management device to potentially update memory bounds (if store
+			// register was vm.mode)
+			vm.devices[2].TrySend(0, 3, nil)
+
+		// Begin system interrupt and resume
+		case sysintOneArg:
+			if oparg < restrictedInterruptsAddrRange {
+				// Perform privilege check to make sure calling code can actually initiate a
+				// privileged interrupt
+				if *vm.mode != 0 {
+					vm.errcode = errIllegalInstruction
+					continue
+				}
+			}
+
+			handlerAddr := uint32FromBytes(vm.memory[oparg:])
+			if handlerAddr == 0 {
+				vm.errcode = errUnknownInstruction
+				continue
+			}
+
+			// Push caller frame info to the stack so we can resume later
+			vm.initForInterrupt()
+
+			// Update the program counter to be the interrupt handler's address
+			*pc = handlerAddr
+
+		case resumeNoArgs:
+			// privilege check
+			if *vm.mode != 0 {
+				vm.errcode = errIllegalInstruction
+				continue
+			}
+
+			// Back up to frame pointer
+			*vm.sp = *vm.fp
+
+			prevPc, prevSp, prevFp, prevMode := vm.popStackx4Uint32()
+			// Since resume is a privileged instruction, we know the current mode must be 0
+			// If prevMode is anything other than 0 (unprivileged), update the mode and notify memory manager
+			if prevMode != 0 {
+				*vm.mode = prevMode
+				// Allow memory management device to potentially update memory bounds
+				vm.devices[2].TrySend(0, 3, nil)
+			}
+
+			// Restore previous pc/sp/fp register states
+			*vm.pc = prevPc
+			*vm.sp = prevSp
+			*vm.fp = prevFp
+
+		case writeTwoArgs:
+			// privilege check
+			if *vm.mode != 0 {
+				vm.errcode = errIllegalInstruction
+				continue
+			}
+
+			if oparg == 0 {
+				hwinfo := vm.devices[opreg].GetInfo()
+				vm.pushStackSegment(hwinfo.Metadata)
+				vm.pushStack(uint32(len(hwinfo.Metadata)))
+				vm.pushStack(hwinfo.HWID)
+			} else {
+				interactionId, numBytes := vm.popStackx2Uint32()
+				sptr := *vm.sp
+				data := vm.activeSegment[sptr : sptr+numBytes]
+
+				vm.popStackFast(numBytes)
+				vm.pushStack(vm.devices[opreg].TrySend(interactionId, oparg, data))
+			}
+
+		case haltNoArgs:
+			// privilege check
+			if *vm.mode != 0 {
+				vm.errcode = errIllegalInstruction
+				continue
+			}
+
+			// Sets the pc to be this instruction (continues loop until interrupt)
+			*pc -= instructionBytes
 
 		default:
 			// Shouldn't get here since we preprocess+parse all source into
 			// valid instructions before executing
 			vm.errcode = errUnknownInstruction
-			return
+			continue
 		}
 
 		if singleStep {
-			return
+			return true
 		}
 	}
 }
