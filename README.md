@@ -28,7 +28,7 @@ The GVM executable accepts a `-debug` flag as well for starting the program in d
 - - register 1 is the stack pointer
 - - registers indexed 2 through 31 are general purpose
 - 8 specialized registers (sr/srs) indexed after the last general purpose register
-- - sr 32 is the CPU "mode" - 0 means unprivileged, 1 means privileged
+- - sr 32 is the CPU "mode" - 0 means max privilege, 1 means unprivileged
 - - sr 33 is the frame counter used for `return`/`resume` instructions
 - - srs indexed 34-39 are currently unused
 - Supports single stepping through instructions in VM debug mode
