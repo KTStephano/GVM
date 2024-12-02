@@ -62,28 +62,29 @@ The final 4 bytes hold the 32-bit argument for the instruction (if needed).
 
 In the following table, `<>` means the argument is required while `[]` means the argument is optional. For optional arguments, that generally means that if they are not supplied then the VM will get the arguments from the stack dynamically. For example:
 
-> push
-
+```assembly
+    push
+```
 will pop stack[0] and use that as the byte count, whereas
 
-> push 81
-
+```assembly
+    push 81
+```
 will use 81 as the byte count
 
 The arithmetic and logical functions work similarly with their optional arguments. The optional argument determines whether the operation pulls 2 values from the stack, or just 1.
 
-> const 5
-
-> const 3
-
-> addi
-
+```assembly
+    const 5
+    const 3
+    addi
+```
 will add 3+5 and push the result to the stack, whereas
 
-> const 3
-
-> addi 5
-
+```assembly
+    const 3
+    addi 5
+```
 will add 3+5 and push the result to the stack, but it used 1 less instruction and stack argument.
 
 | Bytecode | Args | Description |
@@ -158,11 +159,13 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 - port 0 (handler address 0x00) is system timer
 - - command 2 is "set new timer"
 - - - expects 4 byte input representing microseconds
+
 - port 1 (handler address 0x04) is power controller
 - - command 2 is "perform restart"
 - - - expects no inputs
 - - command 3 is "perform poweroff"
 - - - expects no inputs
+
 - port 2 (handler address 0x08) is memory management unit
 - - command 2 is "set new min/max heap addr bounds" (only applies to non-privileged code)
 - - - expects 8 bytes of input
@@ -172,6 +175,7 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 - - - expects no input
 - - - if CPU mode is 0 (max privilege), unlocks entire memory address range
 - - - if CPU mode is not 0 (non-privileged mode), resets to previous min/max heap addresses
+
 - port 3 (handler address 0x0C) is console IO
 - - command 2 is "write a single 32-bit character"
 - - - expects 4 byte input
@@ -182,4 +186,5 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 - - command 4 is "read 32-bit character"
 - - - expects no input
 - - - when data comes in, it is forwarded to handler address 0x0C
+
 - ports 4-15 are currently unused
