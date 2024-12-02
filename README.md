@@ -14,7 +14,7 @@ After compiling the gvm with `go build .`, you can run the examples as follows:
 - ./gvm examples/runtime.b examples/loop.b
 - ./gvm examples/poweroff.b
 
-The GVM executable accepts a -debug flag as well for starting the program in debug mode. This mode supports single stepping through instructions, setting breakpoints and printing the final assembled program.
+The GVM executable accepts a `-debug` flag as well for starting the program in debug mode. This mode supports single stepping through instructions, setting breakpoints and printing the final assembled program.
 
 # Specification
 
