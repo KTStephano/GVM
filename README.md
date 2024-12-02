@@ -136,55 +136,55 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 # Interfacing with vDevices
 
 `write <port> <command>` is the primary way for privileged instructions to communicate with the different virtual devices connected to the CPU.
--> if `command` = 0, performs get hardware device info (no arguments on stack are needed)
-    when this completes the stack will contain:
-        -> stack[0] = HWID
-        -> stack[1] = num metadata bytes (can be 0)
-        -> stac[2]+ = metadata bytes
+- if `command` = 0, performs get hardware device info (no arguments on stack are needed)
+- - when this completes the stack will contain:
+- - - stack[0] = HWID
+- - - stack[1] = num metadata bytes (can be 0)
+- - - stac[2]+ = metadata bytes
 
--> if `command` = 1, performs get hardware device status (stack should contain 2 constant arguments of 0, 0 which means unused interaction id and no bytes as input)
-    when this completes it will push a 32-bit status code to the stack:
-        -> 0x00 = device not found
-        -> 0x01 = device ready (write req would succeed)
-        -> 0x02 = device busy (write req would fail)
+- if `command` = 1, performs get hardware device status (stack should contain 2 constant arguments of 0, 0 which means unused interaction id and no bytes as input)
+- - when this completes it will push a 32-bit status code to the stack:
+- - - 0x00 = device not found
+- - - 0x01 = device ready (write req would succeed)
+- - - 0x02 = device busy (write req would fail)
 
--> otherwise performs a device-specific operation
-    input stack[0] should be the interaction id (for identifying request when response comes in)
-    input stack[1] should be the number of bytes to write
-    input stack[2] should be the start of the data to write
-
-    when this completes the stack will contain a status code the same as if command = 1 (see above)
+- otherwise performs a device-specific operation
+- - input stack[0] should be the interaction id (for identifying request when response comes in)
+- - input stack[1] should be the number of bytes to write
+- - input stack[2] should be the start of the data to write
+- - when this completes the stack will contain a status code the same as if command = 1 (see above)
 
 ### Device list with their ports/addresses and commands
-- port 0 (handler address 0x00) is system timer
+
+#### port 0 (handler address 0x00) is system timer
 - - command 2 is "set new timer"
 - - - expects 4 byte input representing microseconds
 
-- port 1 (handler address 0x04) is power controller
-- - command 2 is "perform restart"
-- - - expects no inputs
-- - command 3 is "perform poweroff"
-- - - expects no inputs
+#### port 1 (handler address 0x04) is power controller
+- command 2 is "perform restart"
+- - expects no inputs
+- command 3 is "perform poweroff"
+- - expects no inputs
 
-- port 2 (handler address 0x08) is memory management unit
-- - command 2 is "set new min/max heap addr bounds" (only applies to non-privileged code)
-- - - expects 8 bytes of input
-- - - - first 4 bytes: min heap address
-- - - - next 4 bytes: max heap address
-- - command 3 is "update to previously set min/max based on privilege level"
-- - - expects no input
-- - - if CPU mode is 0 (max privilege), unlocks entire memory address range
-- - - if CPU mode is not 0 (non-privileged mode), resets to previous min/max heap addresses
+#### port 2 (handler address 0x08) is memory management unit
+- command 2 is "set new min/max heap addr bounds" (only applies to non-privileged code)
+- - expects 8 bytes of input
+- - - first 4 bytes: min heap address
+- - - next 4 bytes: max heap address
+- command 3 is "update to previously set min/max based on privilege level"
+- - expects no input
+- - if CPU mode is 0 (max privilege), unlocks entire memory address range
+- - if CPU mode is not 0 (non-privileged mode), resets to previous min/max heap addresses
 
-- port 3 (handler address 0x0C) is console IO
-- - command 2 is "write a single 32-bit character"
-- - - expects 4 byte input
-- - command 3 is "write N bytes from address"
-- - - expects 8 byte input
-- - - - first 4 bytes: number of bytes to write
-- - - - next 4 bytes: address to start reading bytes from
-- - command 4 is "read 32-bit character"
-- - - expects no input
-- - - when data comes in, it is forwarded to handler address 0x0C
+#### port 3 (handler address 0x0C) is console IO
+- command 2 is "write a single 32-bit character"
+- - expects 4 byte input
+- command 3 is "write N bytes from address"
+- - expects 8 byte input
+- - - first 4 bytes: number of bytes to write
+- - - next 4 bytes: address to start reading bytes from
+- command 4 is "read 32-bit character"
+- - expects no input
+- - when data comes in, it is forwarded to handler address 0x0C
 
-- ports 4-15 are currently unused
+#### ports 4-15 are currently unused
