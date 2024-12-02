@@ -39,7 +39,7 @@ The GVM executable accepts a `-debug` flag as well for starting the program in d
 - Stack grows down from max address -> min address
 - Segmentation of heap when in non-privileged mode is possible by interfacing with memory controller device
 
-![ProcAddrSpace](GVMProcAddrSpace.png)
+<img src="GVMProcAddrSpace.png" width="512">
 
 ### vDevices
 - Supports 16 virtual devices
