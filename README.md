@@ -87,7 +87,7 @@ will add 3+5 and push the result to the stack, whereas
 will add 3+5 and push the result to the stack, but it used 1 less instruction and stack argument.
 
 | Bytecode | Args | Description |
-| --- | --- |
+| --- | --- | --- |
 | nop | | No operation |
 | byte | <arg> | Pushes a 1-byte const value onto the stack |
 | const | <arg> | Pushes a 4-byte const value onto the stack |
