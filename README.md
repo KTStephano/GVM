@@ -154,19 +154,38 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 - - input stack[2] should be the start of the data to write
 - - when this completes the stack will contain a status code the same as if command = 1 (see above)
 
+### Interfacing examples
+
+```assembly
+    write 3 0       // gets device info for device #3
+
+    const 0         // no bytes
+    const 0         // unused interaction id
+    write 3 1       // gets device status for device #3
+
+    const 's'
+    const 4         // 4 byte input ('s')
+    const 0         // unused interaction id
+    write 3 2       // tells device 3 (console IO) to write a single character
+
+    const 0         // no bytes
+    const 123       // interaction id of 123 (32 bits)
+    write 3 4       // tells device 3 (console IO) to read a single 32-bit character
+```
+
 ### Device list with their ports/addresses and commands
 
-#### port 0 (handler address 0x00) is system timer
+#### -> port 0 (handler address 0x00) is system timer
 - - command 2 is "set new timer"
 - - - expects 4 byte input representing microseconds
 
-#### port 1 (handler address 0x04) is power controller
+#### -> port 1 (handler address 0x04) is power controller
 - command 2 is "perform restart"
 - - expects no inputs
 - command 3 is "perform poweroff"
 - - expects no inputs
 
-#### port 2 (handler address 0x08) is memory management unit
+#### -> port 2 (handler address 0x08) is memory management unit
 - command 2 is "set new min/max heap addr bounds" (only applies to non-privileged code)
 - - expects 8 bytes of input
 - - - first 4 bytes: min heap address
@@ -176,7 +195,7 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 - - if CPU mode is 0 (max privilege), unlocks entire memory address range
 - - if CPU mode is not 0 (non-privileged mode), resets to previous min/max heap addresses
 
-#### port 3 (handler address 0x0C) is console IO
+#### -> port 3 (handler address 0x0C) is console IO
 - command 2 is "write a single 32-bit character"
 - - expects 4 byte input
 - command 3 is "write N bytes from address"
@@ -187,4 +206,4 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 - - expects no input
 - - when data comes in, it is forwarded to handler address 0x0C
 
-#### ports 4-15 are currently unused
+#### -> ports 4-15 are currently unused
