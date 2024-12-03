@@ -101,8 +101,11 @@ package gvm
 
 			loadp8, loadp16, loadp32 (loads 8, 16 or 32 bit value from address at stack[0], widens to 32 bits)
 				loadpX are essentially stack[0] = *stack[0]
+			-> each of the loadp functions accept an optional address byte offset (becomes stack[0] = *(stack[0]+offset))
+
 			storep8, storep16, storep32 (narrows stack[1] to 8, 16 or 32 bits and writes it to address at stack[0])
 				storepX are essentially *stack[0] = stack[1]
+			-> each of the storep functions accept an optional address byte offset (becomes *(stack[0]+offset) = stack[1])
 
 		The push/pop instructions accept an optional argument. This argument is the number of bytes to push to or pop from the stack.
 		If no argument is specified, stack[0] should hold the bytes argument.

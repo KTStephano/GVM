@@ -99,8 +99,8 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 | rload | `<register>` | Loads value of register onto the stack |
 | rstore | `<register>` | Stores value of stack[0] into register and pops stack |
 | rkstore | `<register>` | Stores value of stack[0] into register and leaves stack unchanged |
-| loadp8, loadp16, loadp32 | | Loads 8-, 16-, or 32-bit value from address at stack[0] onto stack (essentially stack[0] = *stack[0]) - result is widened to 32 bits |
-| storep8, storep16, storep32 | | Narrows stack[1] to 8-, 16-, or 32-bits and writes it to address at stack[0] (essentially *stack[0] = cast(stack[1])) |
+| loadp8, loadp16, loadp32 | [offsetbytes] | Loads 8-, 16-, or 32-bit value from address at stack[0] onto stack (essentially stack[0] = *stack[0]) - result is widened to 32 bits. If `offsetbytes` is supplied, it becomes stack[0] = *(stack[0]+offsetbytes). |
+| storep8, storep16, storep32 | [offsetbytes] | Narrows stack[1] to 8-, 16-, or 32-bits and writes it to address at stack[0] (essentially *stack[0] = cast(stack[1])). If `offsetbytes` is supplied, it becomes *(stack[0]+offsetbytes) = cast(stack[1]). |
 | push | `[constant]` | Reserve constant bytes on the stack |
 | pop | `[constant]` | Free bytes back to the stack |
 | addi, addf | `[constant]` | int and float add of either stack[0]+stack[1], or stack[0]+constant |
@@ -123,7 +123,7 @@ will add 3+5 and push the result to the stack, but it used 1 less instruction an
 | jge | `[constant]` | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is >= 0 |
 | jg | `[constant]` | Jump to address at stack[0]/constant if stack[1] (or stack[0] if constant is supplied) is > 0 |
 | call | `[address]` | Push next program address to the stack and jump either to [address] or stack[0] |
-| return | | Clear stack back to beginning of current stack frame and return to caller |
+| return | [bytes] | Clear stack back to beginning of current stack frame and return to caller. If `bytes` argument is supplied, the top `bytes` on the stack are kept around for the caller. |
 | resume | | Similar to return, but for resuming previous execution after interrupt handler is done |
 | sysint | `<address>` | Invokes a privileged interrupt handler at <address> |
 | raddi, raddf | `<register> [constant]` | Add register to stack[0]/constant, update register and push new result to stack |
