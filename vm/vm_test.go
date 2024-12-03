@@ -155,11 +155,11 @@ var (
 	memoryAddressSanityCheck2 = `
 		// adds input reserved bytes and program size bytes
 		addi
-		rstore 2           // store in register[2] (tells us the beginning of unused heap)
+		rstore 3           // store in register[2] (tells us the beginning of unused heap)
 
 		// Set up memory bounds
 		rload 1            // load stack pointer (max heap address)
-		rload 2            // load end of program+reserved segment (min heap address)
+		rload 3            // load end of program+reserved segment (min heap address)
 		const 8            // 8 bytes of input to write
 		const 0            // unused interaction id
 		write 2 2          // set min/max memory bounds when in non-privileged mode

@@ -7,7 +7,6 @@ main:
     byte 0                   // this will serve as byte stop marker for readc
 readloop:
     call readc
-    rload 2                  // load result of readc which is stored in register[2]
     rload 1                  // load stack pointer
     call print              
     pop 4                    // remove 4-byte sp address

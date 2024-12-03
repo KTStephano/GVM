@@ -7,13 +7,11 @@ package gvm
 			- 32 registers starting at index 0
 			- register 0 is the program counter
 			- register 1 is the stack pointer
-			- registers indexed 2 through 31 are general purpose, 32-bit
+			- register 2 is the frame pointer
+			- registers indexed 3 through 31 are general purpose, 32-bit
 			- 8 specialized registers (sr/srs)
 			- sr 0 is the CPU "mode" - 0 means unprivileged, 1 means privileged
-			- sr 1 is the memory segment start (when in unprivileged mode)
-			- sr 2 is the memory segment end (when in unprivileged mode)
-			- srs 3-5 are reserved
-			- srs 6-7 can be used for anything
+			- srs 1-7 can be used for anything
 			- supports single stepping through instructions
 			- supports setting program breakpoints
 
@@ -73,15 +71,19 @@ package gvm
 	of a stack-based design and the increased complexity but better performance (at least for interpreter VMs) of
 	a register-based design. Almost all instructions revolve around the stack, but there are some additions
 	to reduce the number of instructions required in some situations. For example:
-		load 2
+		rload 2
 		const 1
 		addi
-		store 2
+		rstore 2
 
 	can become
-		load 2
+		rload 2
 		addi 1
-		store 2
+		rstore 2
+
+	or even
+		raddi 2 1
+		pop 4
 
 	where the const instruction is removed in favor of inlining the argument with addi.
 
@@ -150,7 +152,7 @@ package gvm
 		Function control flow
 
 			call [address] (push next program address to the stack and jump either to [address] or stack[0])
-			return 		   (clear current stack frame and return to caller)
+			return [bytes] (clear current stack frame and return to caller - if bytes is supplied, current top stack bytes are preserved for caller return values)
 			-> note that call and return go together - a return without a call will break the program
 
 			resume		   (similar to return, but for resuming from inside an interrupt handler)
@@ -416,7 +418,9 @@ func (b Bytecode) NumOptionalOpArgs() int {
 		b == Shiftl || b == Shiftr ||
 		b == Push || b == Pop ||
 		b == Jmp || b == Jz || b == Jnz || b == Jle || b == Jl || b == Jge || b == Jg ||
-		b == Call ||
+		b == Call || b == Return ||
+		b == Loadp8 || b == Loadp16 || b == Loadp32 ||
+		b == Storep8 || b == Storep16 || b == Storep32 ||
 		b.IsRegisterReadWriteOp() {
 		return 1
 	} else {

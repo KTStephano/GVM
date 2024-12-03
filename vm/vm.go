@@ -36,8 +36,8 @@ type VM struct {
 	pubRegisters []register
 	pc           *register // program counter
 	sp           *register // stack pointer (grows down (largest address towards smallest address))
-	mode         *register // CPU mode where 0x00 = max privilege, 0x01 = min privilege
 	fp           *register // frame pointer
+	mode         *register // CPU mode where 0x00 = max privilege, 0x01 = min privilege
 
 	memory [heapSizeBytes]byte
 	// activeSegment is a byte slice into the VM's memory
@@ -132,7 +132,7 @@ func (vm *VM) setInitialVMState() {
 	*vm.sp = heapSizeBytes
 
 	// Clear the frame pointer
-	*vm.fp = 0
+	*vm.fp = *vm.sp
 
 	// Clear CPU mode (sets to max privilege)
 	*vm.mode = 0
@@ -180,8 +180,8 @@ func NewVirtualMachine(program Program) *VM {
 	vm.pubRegisters = vm.registers[:numRegisters]
 	vm.pc = &vm.pubRegisters[0]
 	vm.sp = &vm.pubRegisters[1]
+	vm.fp = &vm.registers[2]
 	vm.mode = &vm.registers[numRegisters]
-	vm.fp = &vm.registers[numRegisters+1]
 
 	// Set available segment to initially point to entire memory region
 	vm.activeSegment = vm.memory[:]
@@ -400,11 +400,17 @@ func (vm *VM) pushStack(value register) {
 	uint32ToBytes(value, vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):])
 }
 
-// Pushes a sequence of bytes to the stack
+// Pushes a sequence of bytes to the stack (starts reading at the end of data down to 0)
 func (vm *VM) pushStackSegment(data []byte) {
-	*vm.sp -= register(len(data))
+	lendata := len(data)
+	if lendata == 0 {
+		return
+	}
+
+	*vm.sp -= register(lendata)
 	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
-	for i := register(0); i < uint32(len(data)); i++ {
+	// Start from the end
+	for i := lendata - 1; i >= 0; i-- {
 		bytes[i] = data[i]
 	}
 }
@@ -463,6 +469,44 @@ func (vm *VM) initForInterrupt() {
 	}
 }
 
+func loadp8(vm *VM, addr uint32, bytes []byte) {
+	addr = vm.computeRelativeStackPointer(addr)
+	uint32ToBytes(uint32(vm.activeSegment[addr]), bytes)
+}
+
+func loadp16(vm *VM, addr uint32, bytes []byte) {
+	addr = vm.computeRelativeStackPointer(addr)
+	uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.activeSegment[addr:])), bytes)
+}
+
+func loadp32(vm *VM, addr uint32, bytes []byte) {
+	addr = vm.computeRelativeStackPointer(addr)
+	uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.activeSegment[addr:])), bytes)
+}
+
+func storep8(vm *VM, addr uint32, value []byte) {
+	addr = vm.computeRelativeStackPointer(addr)
+	vm.activeSegment[addr] = value[0]
+}
+
+func storep16(vm *VM, addr uint32, valueBytes []byte) {
+	addr = vm.computeRelativeStackPointer(addr)
+
+	// unrolled loop
+	vm.activeSegment[addr] = valueBytes[0]
+	vm.activeSegment[addr+1] = valueBytes[1]
+}
+
+func storep32(vm *VM, addr uint32, valueBytes []byte) {
+	addr = vm.computeRelativeStackPointer(addr)
+
+	// unrolled loop
+	vm.activeSegment[addr] = valueBytes[0]
+	vm.activeSegment[addr+1] = valueBytes[1]
+	vm.activeSegment[addr+2] = valueBytes[2]
+	vm.activeSegment[addr+3] = valueBytes[3]
+}
+
 // Instruction fetch, decode+execute
 //
 // This is considered a tight loop. Some of the normal programming conveniences and patterns
@@ -479,7 +523,11 @@ func (vm *VM) initForInterrupt() {
 func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 	defer func() {
 		if r := recover(); r != nil {
-			vm.errcode = errSegmentationFault
+			// If not already a set errorcode, fill it in with segfault here
+			if vm.errcode == nil {
+				vm.errcode = errSegmentationFault
+			}
+
 			// Signal to caller that we want to retry execution
 			retcode = true
 		}
@@ -538,6 +586,7 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 			vm.pushStackByte(oparg)
 		case constOneArg:
 			vm.pushStack(oparg)
+
 		case loadOneArg:
 			vm.pushStack(vm.pubRegisters[opreg])
 		case storeOneArg:
@@ -546,38 +595,47 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 		case kstoreOneArg:
 			regVal := uint32FromBytes(vm.peekStack())
 			vm.pubRegisters[opreg] = register(regVal)
+
 		case loadp8NoArgs:
 			bytes := vm.peekStack()
-			addr := vm.computeRelativeStackPointer(uint32FromBytes(bytes))
-			uint32ToBytes(uint32(vm.activeSegment[addr]), bytes)
+			loadp8(vm, uint32FromBytes(bytes), bytes)
 		case loadp16NoArgs:
 			bytes := vm.peekStack()
-			addr := vm.computeRelativeStackPointer(uint32FromBytes(bytes))
-			uint32ToBytes(uint32(binary.LittleEndian.Uint16(vm.activeSegment[addr:])), bytes)
+			loadp16(vm, uint32FromBytes(bytes), bytes)
 		case loadp32NoArgs:
 			bytes := vm.peekStack()
-			addr := vm.computeRelativeStackPointer(uint32FromBytes(bytes))
-			uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.activeSegment[addr:])), bytes)
+			loadp32(vm, uint32FromBytes(bytes), bytes)
+
+		case loadp8OneArg:
+			bytes := vm.peekStack()
+			loadp8(vm, uint32FromBytes(bytes)+oparg, bytes)
+		case loadp16OneArg:
+			bytes := vm.peekStack()
+			loadp16(vm, uint32FromBytes(bytes)+oparg, bytes)
+		case loadp32OneArg:
+			bytes := vm.peekStack()
+			loadp32(vm, uint32FromBytes(bytes)+oparg, bytes)
+
 		case storep8NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
-			addr := vm.computeRelativeStackPointer(uint32FromBytes(addrBytes))
-			vm.activeSegment[addr] = valueBytes[0]
+			storep8(vm, uint32FromBytes(addrBytes), valueBytes)
 		case storep16NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
-			addr := vm.computeRelativeStackPointer(uint32FromBytes(addrBytes))
-
-			// unrolled loop
-			vm.activeSegment[addr] = valueBytes[0]
-			vm.activeSegment[addr+1] = valueBytes[1]
+			storep16(vm, uint32FromBytes(addrBytes), valueBytes)
 		case storep32NoArgs:
 			addrBytes, valueBytes := vm.popStackx2()
-			addr := vm.computeRelativeStackPointer(uint32FromBytes(addrBytes))
+			storep32(vm, uint32FromBytes(addrBytes), valueBytes)
 
-			// unrolled loop
-			vm.activeSegment[addr] = valueBytes[0]
-			vm.activeSegment[addr+1] = valueBytes[1]
-			vm.activeSegment[addr+2] = valueBytes[2]
-			vm.activeSegment[addr+3] = valueBytes[3]
+		case storep8OneArg:
+			addrBytes, valueBytes := vm.popStackx2()
+			storep8(vm, uint32FromBytes(addrBytes)+oparg, valueBytes)
+		case storep16OneArg:
+			addrBytes, valueBytes := vm.popStackx2()
+			storep16(vm, uint32FromBytes(addrBytes)+oparg, valueBytes)
+		case storep32OneArg:
+			addrBytes, valueBytes := vm.popStackx2()
+			storep32(vm, uint32FromBytes(addrBytes)+oparg, valueBytes)
+
 		case pushNoArgs:
 			// push with no args, meaning we pull # bytes from the stack
 			bytes := vm.popStackUint32()
@@ -965,6 +1023,28 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 			// Restore old PC and old FP
 			*vm.pc = oldPc
 			*vm.fp = oldFp
+		case returnOneArg:
+			// Mark return bytes
+			relsp := vm.computeRelativeStackPointer(*vm.sp)
+			bytes := vm.activeSegment[relsp : relsp+oparg]
+
+			// Back up stack to frame pointer
+			*vm.sp = *vm.fp
+
+			// Get program counter and old frame pointer
+			oldPc, oldFp := vm.popStackx2Uint32()
+
+			// Restore old PC and old FP
+			*vm.pc = oldPc
+			*vm.fp = oldFp
+
+			// Push return bytes to stack - this should work because even though
+			// the return segment and the read from segment overlap, the read from
+			// segment ends at a lower address. Since pushStackSegment starts at the
+			// end and copies down towards 0, this means we won't accidentally start
+			// overwriting entries in bytes before we've had a chance to move them to
+			// their return locations.
+			vm.pushStackSegment(bytes)
 
 		// Begin special register load/store instructions
 		case srLoadOneArg:
@@ -1051,7 +1131,7 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 			} else {
 				interactionId, numBytes := vm.popStackx2Uint32()
 				sptr := *vm.sp
-				data := vm.activeSegment[sptr : sptr+numBytes]
+				data := vm.memory[sptr : sptr+numBytes]
 
 				vm.popStackFast(numBytes)
 				vm.pushStack(vm.devices[opreg].TrySend(interactionId, oparg, data))

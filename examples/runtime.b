@@ -1,10 +1,11 @@
     // adds input reserved bytes and program size bytes
     addi
-    rstore 2           // store in register[2] (tells us the beginning of unused heap)
+    rkstore 3          // store in register[2] (tells us the beginning of unused heap), keep value on stack
+    srstore 33         // store beginning of unused heap in special reserved register 33
 
     // Set up memory bounds
     rload 1            // load stack pointer (max heap address)
-    rload 2            // load end of program+reserved segment (min heap address)
+    rload 3            // load end of program+reserved segment (min heap address)
     const 8            // 8 bytes of input to write
     const 0            // unused interaction id
     write 2 2          // set min/max memory bounds when in non-privileged mode
@@ -37,82 +38,114 @@
     // If we get here, call exit to quit
     call exit
 
-// stack[0] -> return address
-// read 1 character from stdin (return value is in register[2])
-readc: 
-    sysint 0xA0         // make a system call to get the next character (result is stored in register[2])
-    return       
+// fp[0] -> return address
+// fp[4] -> old frame pointer
+// read 1 character from stdin and store result on stack
+readc:
+    const 0             // zeroed 4 bytes for return value
+    sysint 0xA0         // make a system call to get the next character (result is stored in register[3])
+    return 4            // return top 4 bytes on stack
 
 // 0xA0
+//
+// fp[0] -> old PC
+// fp[4] -> old SP
+// fp[8] -> old FP
+// fp[12] -> old mode
+// fp[16] -> beginning of 4 byte buffer to store result
 __requestCharInput:
-    const 0
-    rstore 2            // clear register[2] (will hold char return value)
+    rload 2             // load fp
+    addi 16             // address of return buffer at offset 16 bytes
+    srload 33           // load register[33] which contains beginning of unused heap
+    storep32            // place return buffer address at beginning of unused heap
 
     // set up a character input request from console IO device
     const 0             // no input data
     const 0             // unused interaction id
     write 3 4           // port 3 = console IO device, command 4 = read 32-bit character
-    pop 4               // get rid of write result
     
     // At some point while spinning we will be interrupted to run __handleCharInput
 __waitForChar:
     rload 2
+    loadp32 16          // perform *(fp+16)
     jz __waitForChar    // busy wait loop - could be replaced with context switch to other task in future
-    resume              // register[2] no longer 0 - resume caller
+    resume              // data buffer no longer 0 - resume caller
 
 // 0x0C
+//
+// stack[0] -> interaction id (fp[-12])
+// stack[4] -> number of bytes of input character (4) (fp[-8])
+// stack[8] -> beginning of input character (fp[-4])
+// fp[0] -> old PC
+// fp[4] -> old SP
+// fp[8] -> old FP
+// fp[12] -> old mode
 __handleCharInput:
-    pop 8               // get rid of the interaction id and byte count
-    rstore 2            // store 32-bit character in register 2
+    pop 8               // get rid of the interaction id and byte count (byte count is 4 for this function)
+    srload 33           // load buffer address in special register 33
+    loadp32             // get buffer address
+    storep32            // store 32-bit input character in return buffer
     resume
 
-// stack[0] -> return address
-// stack[1] -> frame pointer
-// stack[2] -> 0-terminated string
-// register[2] will contain string length in bytes (not including 0-byte)
+// fp[0] -> return address
+// fp[4] -> old frame pointer
+// fp[8] -> 0-terminated string address
+// stack will contain return value
 strlen:
-    rload 3              // load register[3] so we can restore it later
+    rload 3              // fp-4
+    rload 4              // fp-8; load register[3, 4] so we can restore them later
     
-    rload 1              // load stack pointer
-    addi 12              // skip past register[3], ret addr and frame pointer to stack pointer where string address sits
-    loadp32              // *stack[0] to get string address
+    rload 2              // load curr frame pointer
+    loadp32 8            // skip past ret addr and frame pointer to stack pointer where string address sits
     rstore 3             // place string address into register[3]
 
-    const 0             
-    rkstore 2            // set up accumulator register, keep value on stack
+    const 0
+    rkstore 4            // set up accumulator in register[4], keep value on stack
 
-__strlenLoop:
-    rload 3              // load string address
-    addi                 // add counter to address
-    loadp8               // load byte from string address
-    jz __strlenDone      // if byte is zero, jump to __strlenDone
-    raddi 2 1            // increment acumulator register, store updated value on stack
-    jmp __strlenLoop
+__strlenloop:
+    rload 3           
+    addi                 // add string address to current accumulator value
+    loadp8
+    jz __strlendone      // if current byte is 0 we're done
+    raddi 4 1            // increment register[4] by 1, store new value on stack
+    jmp __strlenloop
 
-__strlenDone:
+__strlendone:
+    rload 4              // load value of counter
+
+    rload 2              // load frame pointer
+    loadp32 -4           // load pointer at offset -4 bytes
     rstore 3             // restore value of register[3]
-    return
 
-// stack[0] -> return address
-// stack[1] -> frame pointer
-// stack[2] -> 0-terminated string address
+    rload 2
+    loadp32 -8           // load pointer at offset -8 bytes
+    rstore 4             // restore value of register[4]
+
+    return 4             // return top 4 bytes on stack
+
+// fp[0] -> return address
+// fp[4] -> frame pointer
+// fp[8] -> 0-terminated string address
 print:
-    rload 3              // load value of register[3] so we can restore it later
-    rload 1              // load stack pointer
-    addi 12              // skip past value of register[3], ret addr and frame pointer
-    loadp32              // *stack[0] to place string address on top of stack for argument to strlen
-    rkstore 3            // store string address in register[3], keep address on stack
+    rload 2              // load frame pointer
+    loadp32 8            // skip past value of ret addr and frame pointer to get string address
     call strlen
     sysint 0xA8          // system call to __writeBytes
-    pop 4                // remove trailing string address from stack
-    rstore 3             // restore value of register[3]
     return
 
 // 0xA8
-// register[2] should have string length, register[3] should have string address
+//
+// fp[0] -> old PC
+// fp[4] -> old SP
+// fp[8] -> old FP
+// fp[12] -> old mode
+// fp[16] -> num bytes to write
+// fp[20] -> beginning of string address
 __writeBytes:
-    rload 3              // load string address
-    rload 2              // load string length
+    rload 2              // load frame pointer
+    loadp32 20           // get string address
+    rload 2              // load frame pointer
+    loadp32 16           // get number of bytes to write
     const 8              // 8 bytes of input
     const 0              // unused interaction id
     write 3 3            // port 3 = console IO device, command 3 = write N bytes from address

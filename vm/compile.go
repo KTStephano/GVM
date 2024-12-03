@@ -41,12 +41,21 @@ const (
 	storeOneArg  uint16 = 0x0100 | uint16(Rstore)
 	kstoreOneArg uint16 = 0x0100 | uint16(Rkstore)
 
-	loadp8NoArgs   uint16 = uint16(Loadp8)
-	loadp16NoArgs  uint16 = uint16(Loadp16)
-	loadp32NoArgs  uint16 = uint16(Loadp32)
+	loadp8NoArgs  uint16 = uint16(Loadp8)
+	loadp16NoArgs uint16 = uint16(Loadp16)
+	loadp32NoArgs uint16 = uint16(Loadp32)
+
+	loadp8OneArg  uint16 = 0x0100 | uint16(Loadp8)
+	loadp16OneArg uint16 = 0x0100 | uint16(Loadp16)
+	loadp32OneArg uint16 = 0x0100 | uint16(Loadp32)
+
 	storep8NoArgs  uint16 = uint16(Storep8)
 	storep16NoArgs uint16 = uint16(Storep16)
 	storep32NoArgs uint16 = uint16(Storep32)
+
+	storep8OneArg  uint16 = 0x0100 | uint16(Storep8)
+	storep16OneArg uint16 = 0x0100 | uint16(Storep16)
+	storep32OneArg uint16 = 0x0100 | uint16(Storep32)
 
 	pushNoArgs uint16 = uint16(Push)
 	pushOneArg uint16 = 0x0100 | uint16(Push)
@@ -115,6 +124,7 @@ const (
 	callNoArgs   uint16 = uint16(Call)
 	callOneArg   uint16 = 0x0100 | uint16(Call)
 	returnNoArgs uint16 = uint16(Return)
+	returnOneArg uint16 = 0x0100 | uint16(Return)
 
 	// writebNoArgs uint16 = uint16(Writeb)
 	// writecNoArgs uint16 = uint16(Writec)
@@ -512,8 +522,8 @@ func CompileSourceFromBuffer(debug bool, lines []string) (Program, error) {
 		}
 
 		if code.IsRegisterWriteOp() {
-			if instr.register < 2 {
-				return Program{}, fmt.Errorf("illegal register write (reg < 2) at %d: %s", i, instr)
+			if instr.register < 3 {
+				return Program{}, fmt.Errorf("illegal register write (reg < 3) at %d: %s", i, instr)
 			}
 		}
 	}
