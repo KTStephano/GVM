@@ -12,21 +12,34 @@
     pop 4              // remove result of write from stack (TODO: check status)
 
     // Set up interrupt handlers
-    const __requestCharInput
-    const 0xA0
-    storep32
+    
+    // uncomment to allow runtime to interrupt process
+    //const runtime.__timerExpired
+    //const 0x00
+    //storep32
 
-    const __handleCharInput
+    const runtime.__handleCharInput
     const 0x0C
     storep32
 
-    const __requestExit
+    const runtime.__requestCharInput
+    const 0xA0
+    storep32
+
+    const runtime.__requestExit
     const 0xA4
     storep32
 
-    const __writeBytes
+    const runtime.__writeBytes
     const 0xA8
     storep32
+
+    // Set up a 0.05 second timer
+    const 50000         // microseconds
+    const 4             // num bytes of data (we only write 32-bit microsecond value)
+    const 123           // interaction ID
+    write 0 2           // write <port> <command> - port 0 is the timer interrupt device
+    pop 4               // remove result of write from stack
 
     // Move into non-privileged mode
     const 1
@@ -36,12 +49,12 @@
     call main
 
     // If we get here, call exit to quit
-    call exit
+    call runtime.Exit
 
 // fp[0] -> return address
 // fp[4] -> old frame pointer
 // read 1 character from stdin and store result on stack
-readc:
+fmt.Readc:
     const 0             // zeroed 4 bytes for return value
     sysint 0xA0         // make a system call to get the next character (result is stored in register[3])
     return 4            // return top 4 bytes on stack
@@ -53,7 +66,7 @@ readc:
 // fp[8] -> old FP
 // fp[12] -> old mode
 // fp[16] -> beginning of 4 byte buffer to store result
-__requestCharInput:
+runtime.__requestCharInput:
     rload 2             // load fp
     addi 16             // address of return buffer at offset 16 bytes
     srload 33           // load register[33] which contains beginning of unused heap
@@ -64,7 +77,7 @@ __requestCharInput:
     const 0             // unused interaction id
     write 3 4           // port 3 = console IO device, command 4 = read 32-bit character
     
-    // At some point while spinning we will be interrupted to run __handleCharInput
+    // At some point while spinning we will be interrupted to run runtime.__handleCharInput
 __waitForChar:
     rload 2
     loadp32 16          // perform *(fp+16)
@@ -80,7 +93,7 @@ __waitForChar:
 // fp[4] -> old SP
 // fp[8] -> old FP
 // fp[12] -> old mode
-__handleCharInput:
+runtime.__handleCharInput:
     pop 8               // get rid of the interaction id and byte count (byte count is 4 for this function)
     srload 33           // load buffer address in special register 33
     loadp32             // get buffer address
@@ -91,7 +104,7 @@ __handleCharInput:
 // fp[4] -> old frame pointer
 // fp[8] -> 0-terminated string address
 // stack will contain return value
-strlen:
+fmt.Strlen:
     rload 3              // fp-4
     rload 4              // fp-8; load register[3, 4] so we can restore them later
     
@@ -126,11 +139,11 @@ __strlendone:
 // fp[0] -> return address
 // fp[4] -> frame pointer
 // fp[8] -> 0-terminated string address
-print:
+fmt.Print:
     rload 2              // load frame pointer
     loadp32 8            // skip past value of ret addr and frame pointer to get string address
-    call strlen
-    sysint 0xA8          // system call to __writeBytes
+    call fmt.Strlen
+    sysint 0xA8          // system call to runtime.__requestExit
     return
 
 // 0xA8
@@ -141,7 +154,7 @@ print:
 // fp[12] -> old mode
 // fp[16] -> num bytes to write
 // fp[20] -> beginning of string address
-__writeBytes:
+runtime.__writeBytes:
     rload 2              // load frame pointer
     loadp32 20           // get string address
     rload 2              // load frame pointer
@@ -151,12 +164,27 @@ __writeBytes:
     write 3 3            // port 3 = console IO device, command 3 = write N bytes from address
     resume
 
-exit:
+runtime.Exit:
     sysint 0xA4
 
 // 0xA4
-__requestExit:
+runtime.__requestExit:
     const 0             // unused data
     const 0             // unused interaction id
     write 1 3           // port 1 = power controller, command 3 = perform poweroff
     halt                // stops CPU here in case power device takes a bit to shutdown
+
+// 0x00
+runtime.__timerExpired:
+    byte 0
+    const "interrupted by runtime\n"
+    rload 1
+    call fmt.Print
+
+    // Set up a new 0.05 second timer
+    const 50000         // microseconds
+    const 4             // num bytes of data (we only write 32-bit microsecond value)
+    const 123           // interaction ID
+    write 0 2           // write <port> <command> - port 0 is the timer interrupt device
+
+    resume
