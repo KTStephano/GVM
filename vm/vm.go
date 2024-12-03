@@ -548,8 +548,6 @@ func storep32(vm *VM, addr uint32, valueBytes []byte) {
 	vm.activeSegment[addr+3] = valueBytes[3]
 }
 
-// Performs a return operation given old PC, old FP
-
 // Instruction fetch, decode+execute
 //
 // This is considered a tight loop. Some of the normal programming conveniences and patterns
