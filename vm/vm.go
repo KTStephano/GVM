@@ -228,7 +228,7 @@ func NewVirtualMachine(program Program) *VM {
 // Returns a tuple of (code, register, oparg) without packaging it into an Instruction type
 func decodeInstruction(bytes []byte) (uint16, uint16, uint32) {
 	codeRegister := uint32FromBytes(bytes)
-	return uint16(codeRegister & 0x0000ffff), uint16(codeRegister >> 16), uint32FromBytes(bytes[4:])
+	return uint16(codeRegister & 0x0000ffff), uint16((codeRegister & 0xffff0000) >> 16), uint32FromBytes(bytes[4:])
 }
 
 // Takes a series of bytes encoded as little endian and converts them to an instruction
