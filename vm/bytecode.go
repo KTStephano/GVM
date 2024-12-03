@@ -292,8 +292,7 @@ const (
 	Sysint Bytecode = 0x70
 	Resume Bytecode = 0x71
 
-	Write Bytecode = 0xF1
-
+	Write   Bytecode = 0xF1
 	Srload  Bytecode = 0xF2
 	Srstore Bytecode = 0xF3
 

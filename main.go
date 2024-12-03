@@ -11,7 +11,7 @@ import (
 var debugVM = flag.Bool("debug", false, "Enter into debug mode")
 
 func main() {
-	// // Uncomment for CPU profiling (also shows you what was inlined vs not inlined)
+	// Uncomment for CPU profiling (also shows you what was inlined vs not inlined)
 	// f, err := os.Create("pprof.cpu")
 	// if err != nil {
 	// 	log.Fatal(err)

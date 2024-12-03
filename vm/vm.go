@@ -228,17 +228,17 @@ func NewVirtualMachine(program Program) *VM {
 // Returns a tuple of (code, register, oparg) without packaging it into an Instruction type
 func decodeInstruction(bytes []byte) (uint16, uint16, uint32) {
 	codeRegister := uint32FromBytes(bytes)
-	return uint16(codeRegister & 0x0000ffff), uint16((codeRegister & 0xffff0000) >> 16), uint32FromBytes(bytes[4:])
+	return uint16(codeRegister & 0x0000ffff), uint16(codeRegister >> 16), uint32FromBytes(bytes[4:])
 }
 
 // Takes a series of bytes encoded as little endian and converts them to an instruction
 // Returns an Instruction type
 func decodeInstructionTyped(bytes []byte) Instruction {
-	codeRegister := uint32FromBytes(bytes)
+	code, register, oparg := decodeInstruction(bytes)
 	return Instruction{
-		code:     uint16(codeRegister & 0x0000ffff),
-		register: uint16((codeRegister & 0xffff0000) >> 16),
-		arg:      uint32FromBytes(bytes[4:]),
+		code:     code,
+		register: register,
+		arg:      oparg,
 	}
 }
 
@@ -400,6 +400,33 @@ func (vm *VM) pushStack(value register) {
 	uint32ToBytes(value, vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):])
 }
 
+// Same as if push(v1); push(v0) had happened in order
+func (vm *VM) pushStackTwo(v0, v1 register) {
+	*vm.sp -= varchBytesx2
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
+	uint32ToBytes(v0, bytes)
+	uint32ToBytes(v1, bytes[varchBytes:])
+}
+
+// Same as if push(v2); push(v1); push(v0) had happened in order
+func (vm *VM) pushStackThree(v0, v1, v2 register) {
+	*vm.sp -= varchBytesx3
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
+	uint32ToBytes(v0, bytes)
+	uint32ToBytes(v1, bytes[varchBytes:])
+	uint32ToBytes(v2, bytes[varchBytesx2:])
+}
+
+// Same as if push(v3); push(v2); push(v1); push(v0) had happened in order
+func (vm *VM) pushStackFour(v0, v1, v2, v3 register) {
+	*vm.sp -= varchBytesx4
+	bytes := vm.activeSegment[vm.computeRelativeStackPointer(*vm.sp):]
+	uint32ToBytes(v0, bytes)
+	uint32ToBytes(v1, bytes[varchBytes:])
+	uint32ToBytes(v2, bytes[varchBytesx2:])
+	uint32ToBytes(v3, bytes[varchBytesx3:])
+}
+
 // Pushes a sequence of bytes to the stack (starts reading at the end of data down to 0)
 func (vm *VM) pushStackSegment(data []byte) {
 	lendata := len(data)
@@ -429,6 +456,7 @@ func getStackTwoInputs(vm *VM) (uint32, uint32, []byte) {
 	return uint32FromBytes(x), uint32FromBytes(y), y
 }
 
+// compares 2 32-bit numbers and returns -1 (x<y), 0 (x==y), or 1 (x>y)
 func compare[T numeric32](x, y T) uint32 {
 	if x < y {
 		return math.MaxUint32 // -1 when converted to int32
@@ -452,10 +480,7 @@ func (vm *VM) initForInterrupt() {
 	sp := *vm.sp
 
 	// Store state related to current frame to allow for later resume
-	vm.pushStack(*vm.mode)
-	vm.pushStack(*vm.fp)
-	vm.pushStack(sp)
-	vm.pushStack(*vm.pc)
+	vm.pushStackFour(*vm.pc, sp, *vm.fp, *vm.mode)
 
 	// Update fp to point to new location
 	*vm.fp = *vm.sp
@@ -469,6 +494,21 @@ func (vm *VM) initForInterrupt() {
 	}
 }
 
+// Backs up the stack to the current frame pointer, then restores the old
+// frame pointer and program counter
+func returnFromCall(vm *VM) {
+	// Back up stack to frame pointer
+	*vm.sp = *vm.fp
+
+	// Get program counter and old frame pointer
+	oldPc, oldFp := vm.popStackx2Uint32()
+
+	// Restore old PC and old FP
+	*vm.pc = oldPc
+	*vm.fp = oldFp
+}
+
+// load pointer 8, 16 and 32 bits
 func loadp8(vm *VM, addr uint32, bytes []byte) {
 	addr = vm.computeRelativeStackPointer(addr)
 	uint32ToBytes(uint32(vm.activeSegment[addr]), bytes)
@@ -484,6 +524,7 @@ func loadp32(vm *VM, addr uint32, bytes []byte) {
 	uint32ToBytes(uint32(binary.LittleEndian.Uint32(vm.activeSegment[addr:])), bytes)
 }
 
+// store pointer 8, 16 and 32 bits
 func storep8(vm *VM, addr uint32, value []byte) {
 	addr = vm.computeRelativeStackPointer(addr)
 	vm.activeSegment[addr] = value[0]
@@ -506,6 +547,8 @@ func storep32(vm *VM, addr uint32, valueBytes []byte) {
 	vm.activeSegment[addr+2] = valueBytes[2]
 	vm.activeSegment[addr+3] = valueBytes[3]
 }
+
+// Performs a return operation given old PC, old FP
 
 // Instruction fetch, decode+execute
 //
@@ -569,8 +612,7 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 
 				// Store response information next
 				vm.pushStackSegment(resp.data)
-				vm.pushStack(uint32(len(resp.data)))
-				vm.pushStack(resp.id)
+				vm.pushStackTwo(resp.id, uint32(len(resp.data)))
 
 				// Redirect program counter to the handler's address
 				*pc = handlerAddr
@@ -1006,37 +1048,21 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 			*pc = addr
 			*vm.fp = *vm.sp
 		case callOneArg:
-			// Push old frame pointer
-			vm.pushStack(*vm.fp)
-			// Push program counter for next instruction
-			vm.pushStack(*pc)
+			// Push old frame pointer and next instruction
+			vm.pushStackTwo(*pc, *vm.fp)
 
 			*pc = oparg
 			*vm.fp = *vm.sp
 		case returnNoArgs:
-			// Back up stack to frame pointer
-			*vm.sp = *vm.fp
-
-			// Get program counter and old frame pointer
-			oldPc, oldFp := vm.popStackx2Uint32()
-
-			// Restore old PC and old FP
-			*vm.pc = oldPc
-			*vm.fp = oldFp
+			// Rewind state
+			returnFromCall(vm)
 		case returnOneArg:
 			// Mark return bytes
 			relsp := vm.computeRelativeStackPointer(*vm.sp)
 			bytes := vm.activeSegment[relsp : relsp+oparg]
 
-			// Back up stack to frame pointer
-			*vm.sp = *vm.fp
-
-			// Get program counter and old frame pointer
-			oldPc, oldFp := vm.popStackx2Uint32()
-
-			// Restore old PC and old FP
-			*vm.pc = oldPc
-			*vm.fp = oldFp
+			// Rewind state
+			returnFromCall(vm)
 
 			// Push return bytes to stack - this should work because even though
 			// the return segment and the read from segment overlap, the read from
@@ -1126,8 +1152,7 @@ func (vm *VM) execInstructions(singleStep bool) (retcode bool) {
 			if oparg == 0 {
 				hwinfo := vm.devices[opreg].GetInfo()
 				vm.pushStackSegment(hwinfo.Metadata)
-				vm.pushStack(uint32(len(hwinfo.Metadata)))
-				vm.pushStack(hwinfo.HWID)
+				vm.pushStackTwo(hwinfo.HWID, uint32(len(hwinfo.Metadata)))
 			} else {
 				interactionId, numBytes := vm.popStackx2Uint32()
 				sptr := *vm.sp
