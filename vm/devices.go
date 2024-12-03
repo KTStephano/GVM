@@ -183,14 +183,15 @@ type systemTimerData struct {
 type systemTimer struct {
 	DeviceBaseInfo
 
-	timerChan chan systemTimerData
-	closed    atomic.Bool
+	timerChan  chan systemTimerData
+	closedChan chan struct{}
 }
 
 func newSystemTimer(base DeviceBaseInfo) HardwareDevice {
 	st := &systemTimer{
 		DeviceBaseInfo: base,
 		timerChan:      make(chan systemTimerData, 1),
+		closedChan:     make(chan struct{}, 1),
 	}
 
 	// Start the timer goroutine
@@ -198,11 +199,6 @@ func newSystemTimer(base DeviceBaseInfo) HardwareDevice {
 		t := time.NewTimer(time.Duration(math.MaxInt64))
 		var iid InteractionID
 		for {
-			if st.closed.Load() {
-				// Timer system shut down
-				return
-			}
-
 			select {
 			case <-t.C:
 				// Use nil data in response since calling code will interpret our response
@@ -212,6 +208,9 @@ func newSystemTimer(base DeviceBaseInfo) HardwareDevice {
 				// New timer received - overwrite existing
 				t = time.NewTimer(newTimer.duration)
 				iid = newTimer.iid
+			case <-st.closedChan:
+				// Timer system shut down
+				return
 			}
 		}
 	}()
@@ -247,8 +246,7 @@ func (t *systemTimer) Reset() {
 }
 
 func (t *systemTimer) Close() {
-	t.closed.Store(true)
-	t.Reset()
+	t.closedChan <- struct{}{}
 }
 
 // ------- Begin power controller

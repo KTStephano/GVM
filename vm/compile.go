@@ -170,7 +170,8 @@ const (
 
 // Allows us to easily find and replace commands from start to end of line
 var (
-	comments = regexp.MustCompile("//.*")
+	// TODO: Fix // inside of a string
+	comments = regexp.MustCompile(`//.*`)
 
 	// Allows us to replace \\* escape sequence with \*, such as \\n -> \n
 	// (happens when reading from console or file)
@@ -303,7 +304,7 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][3]st
 
 				// Make sure the double or single quote also includes a terminating quote
 				if last <= 0 {
-					return nil, errors.New("unterminated character or string")
+					return nil, fmt.Errorf("unterminated character or string: %s", line)
 				}
 
 				// Insert escape sequence replacements for the characters in between the quotes
@@ -320,7 +321,7 @@ func preprocessLine(line string, labels map[*regexp.Regexp]string, lines [][3]st
 				// Since we know the first arg wasn't quoted, remaining inputs should be numbers or labels
 				// which fit perfectly into 1 or 2 arguments
 				if len(split[1:]) > 2 {
-					return nil, errors.New("too many or invalid type of arguments to instruction")
+					return nil, fmt.Errorf("too many or invalid type of arguments to instruction: %s", line)
 				}
 
 				for i := 0; i < len(split[1:]); i++ {
